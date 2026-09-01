@@ -1,0 +1,532 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  firstName   String  @db.VarChar(100)
+  lastName    String? @db.VarChar(100)
+  displayName String? @db.VarChar(200)
+
+  status UserStatus @default(ACTIVE)
+
+  passwordHash           String?   @db.Text
+  passwordChangedAt      DateTime? @db.Timestamptz(6)
+  passwordFailedAttempts Int       @default(0) @db.SmallInt
+  passwordLockedUntil    DateTime? @db.Timestamptz(6)
+  mustChangePassword     Boolean   @default(false)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt DateTime? @db.Timestamptz(6)
+
+  emails                  UserEmail[]
+  phones                  UserPhone[]
+  authIdentities          AuthIdentity[]
+  sessions                Session[]
+  otpChallenges           OtpChallenge[]
+  userTokens              UserToken[]
+  memberships             OrganizationMembership[]
+  authEvents              AuthEvent[]
+  organizationInvitations OrganizationInvitation[]
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model UserEmail {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+
+  email      String    @db.VarChar(320)
+  isPrimary  Boolean   @default(false)
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([email])
+  @@index([userId])
+}
+
+model UserPhone {
+  id          String @id @default(uuid()) @db.Uuid
+  userId      String @db.Uuid
+  phoneNumber String @unique @db.VarChar(20)
+  isoCountry  String @db.Char(2)
+
+  isPrimary  Boolean   @default(false)
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum AuthProvider {
+  GOOGLE
+}
+
+model AuthIdentity {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+
+  provider       AuthProvider
+  providerUserId String       @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+}
+
+enum AuthMethod {
+  PASSWORD
+  GOOGLE
+  OTP
+}
+
+enum SessionRevocationReason {
+  LOGOUT
+  LOGOUT_ALL
+  PASSWORD_CHANGED
+  TOKEN_REUSE
+  ADMIN
+  EXPIRED
+  SECURITY
+}
+
+model Session {
+  id            String @id @default(uuid()) @db.Uuid
+  userId        String @db.Uuid
+  tokenFamilyId String @default(uuid()) @db.Uuid
+
+  authMethod AuthMethod
+
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  lastUsedAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt  DateTime @db.Timestamptz(6)
+
+  revokedAt        DateTime?                @db.Timestamptz(6)
+  revocationReason SessionRevocationReason?
+
+  ipAddress       String?   @db.Inet
+  userAgent       String?   @db.Text
+  deviceName      String?   @db.VarChar(255)
+  deviceId        String?   @db.VarChar(255)
+  lastRefreshedAt DateTime? @db.Timestamptz(6)
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens SessionRefreshToken[]
+  authEvents    AuthEvent[]
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model SessionRefreshToken {
+  id        String @id @default(uuid()) @db.Uuid
+  sessionId String @db.Uuid
+  tokenHash String @unique @db.Text
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  LOGIN
+  VERIFICATION
+  PASSWORD_RESET
+  MFA
+}
+
+model OtpChallenge {
+  id     String  @id @default(uuid()) @db.Uuid
+  userId String? @db.Uuid
+
+  channel     OtpChannel
+  destination String     @db.VarChar(320)
+  purpose     OtpPurpose
+
+  codeHash   String    @db.Text
+  expiresAt  DateTime  @db.Timestamptz(6)
+  verifiedAt DateTime? @db.Timestamptz(6)
+  attempts   Int       @default(0) @db.SmallInt
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([destination, purpose])
+  @@index([expiresAt])
+}
+
+enum UserTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model UserToken {
+  id        String        @id @default(uuid()) @db.Uuid
+  userId    String        @db.Uuid
+  tokenHash String        @unique @db.Text
+  type      UserTokenType
+
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@index([expiresAt])
+}
+
+model OAuthState {
+  id String @id @default(uuid()) @db.Uuid
+
+  stateHash String @unique @db.Text
+  nonceHash String @db.Text
+
+  provider AuthProvider
+
+  redirectTo String @db.VarChar(2048)
+
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+}
+
+model Role {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String? @db.Uuid
+
+  name        String  @db.VarChar(100)
+  description String? @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  memberships OrganizationMembership[]
+  invitations OrganizationInvitation[]
+  permissions RolePermission[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique @db.VarChar(150)
+  description String? @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String   @db.Uuid
+  permissionId String   @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+enum AuthEventType {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  LOGOUT_ALL
+  PASSWORD_CHANGED
+  PASSWORD_RESET
+  EMAIL_VERIFIED
+  PHONE_VERIFIED
+  GOOGLE_LOGIN
+  OTP_SENT
+  OTP_VERIFIED
+  OTP_FAILED
+  TOKEN_REFRESH
+  TOKEN_REUSE_DETECTED
+  SESSION_REVOKED
+}
+
+model AuthEvent {
+  id        String  @id @default(uuid()) @db.Uuid
+  userId    String? @db.Uuid
+  sessionId String? @db.Uuid
+
+  eventType  AuthEventType
+  authMethod AuthMethod?
+
+  ipAddress String? @db.Inet
+  userAgent String? @db.Text
+  metadata  Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+// ============================================================
+// ORGANIZATION
+// ============================================================
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model Organization {
+  id     String             @id @default(uuid()) @db.Uuid
+  name   String             @db.VarChar(200)
+  slug   String             @unique @db.VarChar(100)
+  status OrganizationStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt DateTime? @db.Timestamptz(6)
+
+  memberships      OrganizationMembership[]
+  invitations      OrganizationInvitation[]
+  roles            Role[]
+  subscriptions    OrganizationSubscription[]
+  featureOverrides OrganizationFeatureOverride[]
+}
+
+// ============================================================
+// ORGANIZATION MEMBERSHIP
+// ============================================================
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+model OrganizationMembership {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  userId         String @db.Uuid
+  roleId         String @db.Uuid
+
+  status   MembershipStatus @default(ACTIVE)
+  joinedAt DateTime?        @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, status])
+  @@index([userId])
+}
+
+// ============================================================
+// ORGANIZATION INVITATION
+// ============================================================
+
+model OrganizationInvitation {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String @db.Uuid
+  email           String @db.VarChar(320)
+  roleId          String @db.Uuid
+  tokenHash       String @unique @db.Text
+  invitedByUserId String @db.Uuid
+
+  expiresAt  DateTime  @db.Timestamptz(6)
+  acceptedAt DateTime? @db.Timestamptz(6)
+  revokedAt  DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  invitedBy User @relation(fields: [invitedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([email])
+  @@index([expiresAt])
+}
+
+// ============================================================
+// RBAC
+// ============================================================
+
+// ============================================================
+// FEATURES
+// ============================================================
+
+model Feature {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique @db.VarChar(100)
+  name        String  @db.VarChar(150)
+  description String? @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  planFeatures          PlanFeature[]
+  organizationOverrides OrganizationFeatureOverride[]
+}
+
+// ============================================================
+// SUBSCRIPTION PLANS
+// ============================================================
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+model SubscriptionPlan {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique @db.VarChar(50)
+  name        String  @db.VarChar(100)
+  description String? @db.VarChar(500)
+
+  price           Decimal         @db.Decimal(12, 2)
+  currency        String          @default("USD") @db.Char(3)
+  billingInterval BillingInterval @default(MONTHLY)
+
+  seatLimit Int? @db.Integer
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  features      PlanFeature[]
+  subscriptions OrganizationSubscription[]
+}
+
+model PlanFeature {
+  planId    String @db.Uuid
+  featureId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([planId, featureId])
+  @@index([featureId])
+}
+
+// ============================================================
+// ORGANIZATION SUBSCRIPTION
+// ============================================================
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+model OrganizationSubscription {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  planId         String @db.Uuid
+
+  status SubscriptionStatus @default(TRIALING)
+
+  currentPeriodStart DateTime @db.Timestamptz(6)
+  currentPeriodEnd   DateTime @db.Timestamptz(6)
+
+  cancelAtPeriodEnd Boolean   @default(false)
+  canceledAt        DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, status])
+  @@index([planId])
+}
+
+// ============================================================
+// ORGANIZATION FEATURE OVERRIDE
+// ============================================================
+
+model OrganizationFeatureOverride {
+  organizationId String @db.Uuid
+  featureId      String @db.Uuid
+
+  enabled Boolean
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, featureId])
+  @@index([featureId])
+}
