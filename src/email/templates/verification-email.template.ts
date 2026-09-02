@@ -18,7 +18,7 @@ export class VerificationEmailTemplate implements EmailTemplate {
         if (typeof token !== 'string') {
             throw new EmailPermanentError('Email Verification job is missing rawToken');
         }
-        const frontendUrl = this.config.get<string>('app.frontendUrl');
+        const frontendUrl = this.config.getOrThrow<string>('app.frontendUrl');
         const verificationUrl = generateEmailTemplateUrl(`${frontendUrl}/auth/verify-email?token=`, token);
         return {
             to: job.to,
@@ -42,6 +42,7 @@ export class VerificationEmailTemplate implements EmailTemplate {
 
                 This link will expire in 24 hours.
             `,
+            idempotencyKey: job.idempotencyKey
         };
     }
 }

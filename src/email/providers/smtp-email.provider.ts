@@ -57,7 +57,7 @@ export class SmtpEmailProvider implements EmailProvider {
                 html: message.html,
                 text: message.text
             });
-    
+
             return {
                 messageId: result.messageId,
                 accepted: result.accepted.map(String),
@@ -87,6 +87,13 @@ export class SmtpEmailProvider implements EmailProvider {
     }
 
     private classifySmtpError(error: unknown): Error {
+        if (
+            error instanceof EmailRetryableError ||
+            error instanceof EmailPermanentError
+        ) {
+            return error;
+        }
+
         if (!(error instanceof Error)) {
             return new EmailRetryableError('Unknown error type', {cause: error});
         }

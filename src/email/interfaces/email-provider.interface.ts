@@ -4,6 +4,12 @@ export interface EmailMessage {
     html: string;
     text?: string;
     from?: string;
+    idempotencyKey: string;
+}
+
+export enum EmailProviderType {
+    SMTP = 'smtp',
+    RESEND = 'resend',
 }
 
 export interface EmailProvider {
