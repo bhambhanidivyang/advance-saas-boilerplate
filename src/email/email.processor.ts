@@ -28,17 +28,33 @@ export class EmailProcessor extends WorkerHost {
     }
 
     async process(job: Job<EmailJob>): Promise<void> {
-        try {
-            this.logger.log(`Processing email job: ${job.name}, attempt ${job.attemptsMade + 1}`);
-            const message = this.emailTemplateService.render(job.data);
-            this.logger.log({to: message.to,subject: message.subject}, 'EMAIL MESSAGE CREATED');
-            const result = await this.emailProvider.send(message);
-            this.logger.log({messageId: result.messageId,accepted: result.accepted,rejected: result.rejected}, 'EMAIL QUEUED');
-        } catch(error) {
-            this.logger.error(error, 'EMAIL PROCESSING FAILED');
-            throw error;
-        }
-        
+        this.logger.log(
+            {
+                jobId: job.id,
+                jobType: job.name,
+                attempt: job.attemptsMade + 1,
+            },
+            'Processing email job'
+        );
+        const message = this.emailTemplateService.render(job.data);
+        this.logger.log(
+            {
+                jobId: job.id,
+                jobType: job.name,
+                subject: message.subject
+            },
+            'Email Message Created'
+        );
+        const result = await this.emailProvider.send(message);
+        this.logger.log(
+            {
+                jobId: job.id,
+                jobType: job.name,
+                messageId: result.messageId,
+                acceptedCount: result.accepted.length,
+                rejectedCount: result.rejected.length
+            },
+            'Email Sent');
     }
 
     // BullMQ worker failure event - listen for worker-level events and detect final-failure
@@ -50,7 +66,7 @@ export class EmailProcessor extends WorkerHost {
         if (!job) {
             this.logger.error(
                 { err: error },
-                'EMAIL JOB FAILED WITHOUT JOB DATA',
+                'Email Job Failed Without Job Data',
             );
             return;
         }
@@ -67,7 +83,7 @@ export class EmailProcessor extends WorkerHost {
                 finalFailure: isFinalFailure,
                 err: error,
             },
-            'EMAIL JOB FAILED'
+            'Email Job Failed'
         );
 
         if (!isFinalFailure) {
