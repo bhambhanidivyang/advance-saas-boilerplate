@@ -48,6 +48,7 @@ export class AuthService {
          this.verificationTokenTtl = this.config.get<number>('email.verificationTokenTtl')!;
     }
 
+    // register a new user
     async register(body: CreateNewUser) {
         const { email, password, firstName, lastName, displayName } = body;
 
@@ -163,8 +164,10 @@ export class AuthService {
         }
     }
 
+    // login a user
     async login() {}
 
+    // get mail details
     private async getMailDetails(email: string) {
         return this.prisma.userEmail.findUnique({
             select: { id: true, userId: true, isVerified: true },
@@ -172,6 +175,7 @@ export class AuthService {
         });
     }
 
+    // expire all active token associated with that mail for Email Verification
     private async expireVerificationTokenByMail(args: ExpireActiveTokenArgs) {
         const { tx, emailId, userId } = args;
         return tx.userToken.updateMany({
@@ -189,6 +193,7 @@ export class AuthService {
         });
     }
 
+    // create a new verification token
     private async createNewToken(args: CreateNewTokenArgs) {
         const { tx, userId, hashedToken, emailId } = args;
         return tx.userToken.create({
@@ -204,6 +209,7 @@ export class AuthService {
         });
     }
 
+    // enqueue a verification email
     private async enqueueMail(args: EnqueueEmailArgs) {
         const { newToken, userId, normalizedEmail, rawToken } = args;
         return this.emailService.enqueue({
@@ -218,8 +224,10 @@ export class AuthService {
         });
     }
 
+    // check if the verification cooldown is active
     private async isVerificationCooldownActive(args: CoolDownArgs): Promise<boolean> {
         const { tx, userId, emailId } = args;
+        // find the latest verification token
         const latestVerificationToken = await tx.userToken.findFirst({
             where: {
                 userId,
@@ -237,6 +245,7 @@ export class AuthService {
             },
         });
 
+        // if the latest verification token is not found, return false
         if (!latestVerificationToken) {
             this.logger.log({
                 code: 'LATEST_VERIFICATION_TOKEN_NOT_FOUND',
@@ -250,6 +259,7 @@ export class AuthService {
         const cooldownTime = this.config.get<number>('auth.authVerificationResendCooldown')!;
         const cooldownEndsAt = createdAt + (cooldownTime * 1000);
 
+        // if the cooldown is active, return true
         if (Date.now() < cooldownEndsAt) {
             this.logger.log({
                 code: 'COOLDOWN',
@@ -259,14 +269,19 @@ export class AuthService {
             return true;
         }
     
+        // if the cooldown is not active, return false
         return false;
     }
 
+    // create a new verification token with retry
     private async createVerificationTokenWithRetry(args: CreateVerificationTokenArgs) {
         const { userId, emailId } = args;
-        const maxRetries = 3;
+        // max retries for creating a new verification token
+        const maxRetries = this.config.get<number>('auth.authVerificationResendMaxRetries')!;
+        // retry loop
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
+                // create a new verification token with retry
                 return await this.prisma.$transaction(async (tx) =>
                     {
                         // Cooldown check
@@ -275,22 +290,24 @@ export class AuthService {
                             return { allowed: false as const, token: null };
                         }
         
-                        // update all active token associated with that mail for Email Verification as expired
+                        // expire all active token associated with that mail for Email Verification
                         await this.expireVerificationTokenByMail({tx, emailId, userId});
         
                         // create a new hash
                         const rawToken = this.generateRawToken();
                         const hashedToken = this.generateTokenHash(rawToken);
         
-                        // add a new token with new token hash
+                        // create a new verification token with new token hash
                         const token = await this.createNewToken({tx, userId, hashedToken, emailId});
                         return { allowed: true as const, token, rawToken };
                     },
+                    // transaction isolation level
                     {
                         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
                     },
                 );
             } catch(error) {
+                // if the error is a known error and we are not at the last attempt, retry
                 if (
                     error instanceof Prisma.PrismaClientKnownRequestError &&
                     error.code === 'P2034' &&
@@ -304,14 +321,16 @@ export class AuthService {
         
                     continue;
                 }
-        
+                // if the error is not a known error or we are at the last attempt, throw the error
                 throw error;
             }
             
         }
+        // if we have exhausted all retries, throw an error
         throw new Error('Unreachable');
     }
 
+    // resend a verification email
     async resendVerifyEmail(email: string) {
         // normalize email
         const normalizedEmail = normalizeEmail(email);
@@ -319,6 +338,7 @@ export class AuthService {
         // get mail details
         const mailDetails = await this.getMailDetails(normalizedEmail);
 
+        // if the mail details are not found, return a generic verification response
         if (!mailDetails) {
             return {
                 success: true,
@@ -341,8 +361,10 @@ export class AuthService {
             };
         }
 
+        // create a new verification token with retry
         const transactionResult = await this.createVerificationTokenWithRetry({userId, emailId});
 
+        // if the cooldown is active, return a generic verification response
         if (transactionResult.allowed === false) {
             this.logger.log({
                 code: 'COOLDOWN_ACTIVE',
@@ -377,6 +399,7 @@ export class AuthService {
         }
     }
 
+    // verify a user's email
     async verifyEmail(params: VerifyEmailParams) {
         const { rawToken } = params;
         // hash raw token
@@ -390,19 +413,22 @@ export class AuthService {
                 },
             });
 
-            // validate
+            // validate the token is not null and is of type EMAIL_VERIFICATION
             if (!storedToken || (storedToken.type !== UserTokenType.EMAIL_VERIFICATION)) {
                 throw new BadRequestException('Invalid verification token');
             }
 
+            // validate the token is not used
             if (storedToken.usedAt) {
                 throw new BadRequestException('Verification token has already been used');
             }
 
+            // validate the token is not expired
             if (storedToken.expiresAt && storedToken.expiresAt <= new Date()) {
                 throw new BadRequestException('Verification token has expired');
             }
 
+            // validate the user email metadata
             const userEmailMetadata = storedToken.metaData  as { userEmailId?: string } | null;
             if (
                 !userEmailMetadata ||
@@ -426,6 +452,7 @@ export class AuthService {
                     },
                 });
             } catch (error) {
+                // if the error is a known error, throw a bad request exception
                 if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
                     throw new BadRequestException('Verification token has already been used');
                 }
@@ -467,6 +494,7 @@ export class AuthService {
         });
     }
 
+    // find the active user by email
     private findActiveUserByEmail(tx: Prisma.TransactionClient, email: string) {
         return tx.userEmail.findUnique({
             where: {
@@ -478,10 +506,12 @@ export class AuthService {
         })
     }
 
+    // generate a raw token
     private generateRawToken() {
         return randomBytes(32).toString('base64url');
     }
 
+    // generate a token hash
     private generateTokenHash(rawToken: string) {
         return createHash('sha256').update(rawToken).digest('hex')
     }
