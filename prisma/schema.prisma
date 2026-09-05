@@ -210,6 +210,7 @@ model UserToken {
   userId    String        @db.Uuid
   tokenHash String        @unique @db.Text
   type      UserTokenType
+  metaData  Json?
 
   expiresAt DateTime  @db.Timestamptz(6)
   usedAt    DateTime? @db.Timestamptz(6)

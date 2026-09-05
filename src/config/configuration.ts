@@ -54,4 +54,7 @@ export default () => ({
             apiKey: process.env.RESEND_API_KEY,
         },
     },
+    auth: {
+        authVerificationResendCooldown: Number(process.env.AUTH_VERIFICATION_RESEND_COOLDOWN) || 60,
+    }
 })

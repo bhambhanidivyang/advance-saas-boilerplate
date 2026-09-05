@@ -34,4 +34,5 @@ export const envValidationSchema = Joi.object({
     MAIL_QUEUE_CONCURRENCY: Joi.number().integer().positive().required().default(5),
     MAIL_QUEUE_RATE_LIMIT_MAX: Joi.number().integer().positive().required().default(50),
     MAIL_QUEUE_RATE_LIMIT_DURATION: Joi.number().integer().positive().required().default(1000),
+    AUTH_VERIFICATION_RESEND_COOLDOWN: Joi.number().integer().positive().required().default(60)
 })

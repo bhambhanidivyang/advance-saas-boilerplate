@@ -44,37 +44,51 @@ import crypto from 'node:crypto';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         pinoHttp: {
-          level: config.get<string>('app.environment') === 'production' ? 'info' : 'debug'
-        },
-        genReqId: (req) => {
-          const incoming = req.headers['x-request-id'];
-          if (
-            typeof incoming === 'string' &&
-            incoming.length <= 100
-          ) {
-            return incoming;
-          }        
-          return crypto.randomUUID();
-        },
-        redact: {
-          paths: [
-            'req.headers.authorization',
-            'req.headers.cookie',
-            'req.body.password',
-            'req.body.currentPassword',
-            'req.body.newPassword',
-            'req.body.passwordHash',
-            'req.body.otp',
-            'req.body.verificationCode',
-            'req.body.refreshToken',
-            'req.body.accessToken',
-            'req.body.token',
-            'req.body.tokenHash',
-            'req.body.rawToken',
-            'req.body.clientSecret',
-            'req.body.apiKey',
-          ],
-          censor: '[REDACTED]'
+          level: config.get<string>('app.environment') === 'production' ? 'info' : 'debug',
+          transport:
+            process.env.NODE_ENV !== 'production'
+            ? {
+                target: 'pino-pretty',
+                options: {
+                  colorize: true,
+                  singleLine: true,
+                  translateTime: 'SYS:standard',
+                  levelFirst: true,
+                  messageFormat: '{msg}',
+                  ignore: 'pid,hostname',
+                },
+              }
+            : undefined,
+          genReqId: (req) => {
+            const incoming = req.headers['x-request-id'];
+            if (
+              typeof incoming === 'string' &&
+              incoming.length <= 100
+            ) {
+              return incoming;
+            }        
+            return crypto.randomUUID();
+          },
+          redact: {
+            paths: [
+              'req.headers.authorization',
+              'req.headers.cookie',
+              'req.body.password',
+              'req.body.currentPassword',
+              'req.body.newPassword',
+              'req.body.passwordHash',
+              'req.body.otp',
+              'req.body.verificationCode',
+              'req.body.refreshToken',
+              'req.body.accessToken',
+              'req.body.token',
+              'req.body.tokenHash',
+              'req.body.rawToken',
+              'req.body.clientSecret',
+              'req.body.apiKey',
+            ],
+            censor: '[REDACTED]'
+          }
         }
       })
     }),
