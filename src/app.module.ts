@@ -14,6 +14,8 @@ import { AuthModule } from './auth/auth.module';
 import { BullModule } from '@nestjs/bullmq';
 import { EmailModule } from './email/email.module';
 import crypto from 'node:crypto';
+import { JwtModule } from '@nestjs/jwt';
+import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -32,6 +34,16 @@ import crypto from 'node:crypto';
             name: 'default',
             ttl: config.get<number>('throttling.default.ttl')!,
             limit: config.get<number>('throttling.default.limit')!
+          },
+          {
+            name: 'auth',
+            ttl: config.get<number>('throttling.auth.ttl')!,
+            limit: config.get<number>('throttling.auth.limit')!
+          },
+          {
+            name: 'otp',
+            ttl: config.get<number>('throttling.otp.ttl')!,
+            limit: config.get<number>('throttling.otp.limit')!
           }
         ],
         storage: new ThrottlerStorageRedisService(
@@ -92,6 +104,14 @@ import crypto from 'node:crypto';
         }
       })
     }),
+    JwtModule.registerAsync({
+      global: true,
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.getOrThrow('auth.jwt.accessSecret')
+      }),
+    }),
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -114,6 +134,10 @@ import crypto from 'node:crypto';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard
+    },
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard
     }
   ]
 })

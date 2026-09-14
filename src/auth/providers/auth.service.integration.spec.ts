@@ -15,18 +15,19 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Logger } from 'nestjs-pino';
 import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { installTransactionOverlapBarrier } from 'src/common/testing/transaction-overlap-barrier';
 import { EmailService } from 'src/email/email.service';
+import { SessionService } from './session.service';
 import {
   AuthEventType,
   Prisma,
   UserTokenType,
 } from 'src/generated/prisma/client';
-import { GENERIC_VERIFICATION_RESPONSE } from './constants/auth.constants';
+import { GENERIC_VERIFICATION_RESPONSE } from '../constants/auth.constants';
 import { EmailJobType } from 'src/email/interfaces/email-job.interface';
 
 const COOLDOWN_SECONDS = 60;
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
-const BARRIER_TIMEOUT_MS = 10_000;
 
 type EnqueuedVerificationJob = {
   type: EmailJobType;
@@ -76,66 +77,6 @@ function exceptionMessage(error: unknown): string {
   throw error;
 }
 
-/**
- * Holds the first N $transaction calls until they have all arrived, then
- * releases them together so the database work actually overlaps.
- * Later retries (P2034) are not gated.
- */
-function installTransactionOverlapBarrier(
-  prisma: PrismaService,
-  overlappingCalls: number,
-) {
-  const originalTransaction = prisma.$transaction.bind(prisma);
-  let firstWaveArrivals = 0;
-  let firstWaveReleased = false;
-  const waiting: Array<() => void> = [];
-  let transactionCalls = 0;
-
-  const spy = jest
-    .spyOn(prisma, '$transaction')
-    .mockImplementation((...args: unknown[]) => {
-      transactionCalls += 1;
-
-      const run = () =>
-        (originalTransaction as (...inner: unknown[]) => Promise<unknown>)(
-          ...args,
-        );
-
-      if (firstWaveReleased) {
-        return run();
-      }
-
-      firstWaveArrivals += 1;
-      if (firstWaveArrivals < overlappingCalls) {
-        return Promise.race([
-          new Promise<unknown>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              reject(
-                new Error(
-                  `Concurrency barrier timed out after ${BARRIER_TIMEOUT_MS}ms`,
-                ),
-              );
-            }, BARRIER_TIMEOUT_MS);
-
-            waiting.push(() => {
-              clearTimeout(timer);
-              resolve(run());
-            });
-          }),
-        ]);
-      }
-
-      firstWaveReleased = true;
-      waiting.forEach((release) => release());
-      return run();
-    });
-
-  return {
-    getTransactionCalls: () => transactionCalls,
-    restore: () => spy.mockRestore(),
-  };
-}
-
 describe('AuthService concurrency (PostgreSQL)', () => {
   let service: AuthService;
   let prisma: PrismaService;
@@ -169,6 +110,9 @@ describe('AuthService concurrency (PostgreSQL)', () => {
         AuthService,
         PrismaService,
         { provide: EmailService, useValue: { enqueue } },
+        // These tests exercise register/resend/verify only; login is covered by
+        // the unit specs and the rotation integration spec.
+        { provide: SessionService, useValue: { createSession: jest.fn() } },
         {
           provide: ConfigService,
           useValue: {
@@ -275,7 +219,7 @@ describe('AuthService concurrency (PostgreSQL)', () => {
         });
 
       const barrier = installTransactionOverlapBarrier(prisma, 2);
-      let results: Array<{ success: true; message: string }>;
+      let results: Array<{ success: boolean; message: string }>;
       try {
         results = await Promise.all([
           service.resendVerifyEmail(email),

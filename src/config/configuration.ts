@@ -13,22 +13,22 @@ export default () => ({
     },
     throttling: {
         default: {
-            ttl: parseInt(process.env.THROTTLE_DEFAULT_TTL!, 10),
-            limit: parseInt(process.env.THROTTLE_DEFAULT_LIMIT!, 10),
+            ttl: Number(process.env.THROTTLE_DEFAULT_TTL!),
+            limit: Number(process.env.THROTTLE_DEFAULT_LIMIT!),
         },
         auth: {
-            ttl: parseInt(process.env.THROTTLE_AUTH_TTL!, 10),
-            limit: parseInt(process.env.THROTTLE_AUTH_LIMIT!, 10),
+            ttl: Number(process.env.THROTTLE_AUTH_TTL!),
+            limit: Number(process.env.THROTTLE_AUTH_LIMIT!),
         },
         otp: {
-            ttl: parseInt(process.env.THROTTLE_OTP_TTL!, 10),
-            limit: parseInt(process.env.THROTTLE_OTP_LIMIT!, 10),
+            ttl: Number(process.env.THROTTLE_OTP_TTL!),
+            limit: Number(process.env.THROTTLE_OTP_LIMIT!),
         }
     },
     email: {
         provider: process.env.EMAIL_PROVIDER,
         from: process.env.MAIL_FROM,
-        verificationTokenTtl: process.env.MAIL_VERIFICATION_TOKEN_TTL,
+        verificationTokenTtl: Number(process.env.MAIL_VERIFICATION_TOKEN_TTL),
     
         smtp: {
             host: process.env.MAIL_HOST,
@@ -56,5 +56,39 @@ export default () => ({
     },
     auth: {
         authVerificationResendCooldown: Number(process.env.AUTH_VERIFICATION_RESEND_COOLDOWN) || 60,
-    }
+        passwordMaxFailedAttempts: Number(process.env.PASSWORD_MAX_FAILED_ATTEMPTS) || 5,
+        passwordLockDurationSeconds: Number(process.env.PASSWORD_LOCK_DURATION_SECONDS) || 3600,
+        authVerificationResendMaxRetries: Number(process.env.AUTH_VERIFICATION_RESEND_MAX_RETRIES) || 3,
+        jwt: {
+            accessSecret: process.env.JWT_ACCESS_SECRET,
+            accessTtlSeconds: Number(process.env.JWT_ACCESS_TTL_SECONDS) || 600,
+            issuer: process.env.JWT_ISSUER,
+            audience: process.env.JWT_AUDIENCE || 'backend',
+            accessKid: process.env.JWT_ACCESS_KID,
+        },
+        session: {
+            absoluteTtlSeconds: Number(process.env.SESSION_ABSOLUTE_TTL_SECONDS) || 1209600,
+            refreshTtlSeconds: Number(process.env.SESSION_REFRESH_TTL_SECONDS) || 2592000,
+            refreshReuseGraceSeconds: Number(process.env.SESSION_REFRESH_REUSE_GRACE_SECONDS) || 15,
+            maxActivePerUser: Number(process.env.SESSION_MAX_ACTIVE_PER_USER) || 10,
+            denylistEnabled: process.env.SESSION_DENYLIST_ENABLED === 'true',
+        },
+        cookie: {
+            name: process.env.SESSION_COOKIE_NAME || 'mn_rt',
+            domain: process.env.SESSION_COOKIE_DOMAIN || undefined,
+            sameSite: (process.env.SESSION_COOKIE_SAME_SITE || 'lax') as 'lax' | 'strict' | 'none',
+            secure: process.env.SESSION_COOKIE_SECURE ? process.env.SESSION_COOKIE_SECURE === 'true' : true,
+        },
+        trustProxy:
+            process.env.TRUST_PROXY
+            ? (process.env.TRUST_PROXY.trim() === 'true'
+                ? true
+                : process.env.TRUST_PROXY.trim() === 'false'
+                    ? false
+                    : !isNaN(Number(process.env.TRUST_PROXY))
+                        ? Number(process.env.TRUST_PROXY)
+                        : process.env.TRUST_PROXY.trim())
+            : false,
+        
+    },
 })
