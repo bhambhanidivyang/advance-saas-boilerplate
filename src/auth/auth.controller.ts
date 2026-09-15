@@ -153,11 +153,11 @@ export class AuthController {
         @Req() req: Request,
         @Res({ passthrough: true }) res: Response
     ): Promise<LogoutResponse> {
-        const revokedSessions = await this.sessionService.revokeAllSessions(
-            user.userId,
-            user.sessionId,
-            buildAuthContext(req)
-        );
+        const revokedSessions = await this.sessionService.revokeAllSessions({
+            userId: user.userId,
+            initiatingSessionId: user.sessionId,
+            context: buildAuthContext(req)
+        });
 
         res.clearCookie(
             this.config.getOrThrow<string>('auth.cookie.name'),

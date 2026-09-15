@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { CreateSessionArgs, IssuedSession, RotationOutcome } from "../interfaces/session.interface";
+import { CreateSessionArgs, IssuedSession, RevokeAllSessionsArgs, RotationOutcome } from "../interfaces/session.interface";
 import { PrismaService } from "src/prisma/prisma.service";
 import { TokenService } from "./token.service";
 import { SessionDenylistService } from "./session-denylist.service";
@@ -45,19 +45,27 @@ export class SessionService {
             // Evict the least recently used rather than rejecting the login: the
             // password was correct, and a blocked user has no way to free a slot
             // (logging out elsewhere needs a session they cannot get).
+            //
+            // SOFT cap, deliberately. Two simultaneous logins can both observe the
+            // same count and both insert, leaving the user one over the limit. The
+            // guarantee is "we normally keep at most N sessions and evict the least
+            // recently used when needed", NOT "a user can never exceed N". A hard cap
+            // would mean Serializable on the login path.
             let evictedSessionIds: string[] = [];
             const evictCount = activeSessions.length - maxSessions + 1;
             if (evictCount > 0) {
-                const evictedIds = activeSessions.slice(0, evictCount).map((s) => s.id);
+                evictedSessionIds = activeSessions
+                    .slice(0, evictCount)
+                    .map((session) => session.id);
                 await tx.session.updateMany({
-                    where: { id: { in: evictedIds }, revokedAt: null },
+                    where: { id: { in: evictedSessionIds }, revokedAt: null },
                     data: {
                         revokedAt: now,
                         revocationReason: SessionRevocationReason.SESSION_LIMIT,
                     },
                 });
                 await tx.sessionRefreshToken.updateMany({
-                    where: { sessionId: { in: evictedIds }, revokedAt: null },
+                    where: { sessionId: { in: evictedSessionIds }, revokedAt: null },
                     data: { revokedAt: now },
                 });
                 await logAuditEvent({
@@ -69,7 +77,7 @@ export class SessionService {
                     metadata: {
                         deviceId: args.context.deviceId,
                         maxActivePerUser: maxSessions,
-                        evictedSessionIds: evictedIds,
+                        evictedSessionIds,
                     },
                 });
             }
@@ -213,6 +221,12 @@ export class SessionService {
                 return { kind: 'REJECTED', reason: REFRESH_FAILURE_REASON.TOKEN_EXPIRED };
             }
 
+            // Intentional semantic, not an oversight: reuse of a recently-used
+            // refresh token is TOLERATED inside the grace window, because a
+            // legitimate client double-submits routinely (two calls 401 together, a
+            // retry after a dropped response). Inside the window a thief's replay is
+            // therefore indistinguishable from that; outside it, reuse is treated as
+            // compromise. Narrowing the window trades false logouts for detection.
             let graceReplay = false;
 
             // If stored token is already consumed
@@ -509,11 +523,16 @@ export class SessionService {
      * Revokes every active session for a user. Writes ONE audit event carrying the
      * count rather than one per session: this is a single user action.
      */
-    async revokeAllSessions(
-        userId: string,
-        initiatingSessionId: string | undefined,
-        context: AuthContext,
-    ): Promise<number> {
+    async revokeAllSessions(args: RevokeAllSessionsArgs): Promise<number> {
+        const {
+            userId,
+            context,
+            initiatingSessionId,
+            reason = SessionRevocationReason.LOGOUT_ALL,
+            eventType = AuthEventType.LOGOUT_ALL,
+            exceptSessionId,
+        } = args;
+
         const now = new Date();
 
         // Ids are read first so the exact set revoked here is known: needed for the
@@ -521,7 +540,13 @@ export class SessionService {
         // already revoked earlier.
         const revokedSessionIds = await this.prisma.$transaction(async (tx) => {
             const activeSessions = await tx.session.findMany({
-                where: { userId, revokedAt: null },
+                where: {
+                    userId,
+                    revokedAt: null,
+                    // A password change revokes every OTHER device but leaves the
+                    // caller signed in where they are.
+                    ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}),
+                },
                 select: { id: true },
             });
 
@@ -533,7 +558,7 @@ export class SessionService {
 
             await tx.session.updateMany({
                 where: { id: { in: sessionIds } },
-                data: { revokedAt: now, revocationReason: SessionRevocationReason.LOGOUT_ALL },
+                data: { revokedAt: now, revocationReason: reason },
             });
 
             await tx.sessionRefreshToken.updateMany({
@@ -545,13 +570,14 @@ export class SessionService {
                 tx,
                 userId,
                 sessionId: initiatingSessionId,
-                eventType: AuthEventType.LOGOUT_ALL,
+                eventType,
                 ipAddress: context.ipAddress,
                 userAgent: context.userAgent,
                 metadata: {
                     deviceId: context.deviceId,
                     revokedCount: sessionIds.length,
                     initiatingSessionId: initiatingSessionId ?? null,
+                    keptSessionId: exceptSessionId ?? null,
                 },
             });
 

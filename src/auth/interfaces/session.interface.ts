@@ -1,4 +1,4 @@
-import { AuthMethod } from "src/generated/prisma/enums";
+import { AuthEventType, AuthMethod, SessionRevocationReason } from "src/generated/prisma/enums";
 import { AuthContext } from "./auth-context.interface";
 
 export interface CreateSessionArgs {
@@ -40,6 +40,23 @@ export type RotationOutcome =
           /** Sessions revoked by the theft path, to be denylisted after commit. */
           revokedSessionIds?: string[];
       };
+
+/**
+ * Bulk session revocation. The reason and event type are parameters because the
+ * same operation serves several account-level actions (logout everywhere, a
+ * password change, an admin action), and `exceptSessionId` exists so a password
+ * change does not log the user out of the tab they just used.
+ */
+export interface RevokeAllSessionsArgs {
+    userId: string;
+    context: AuthContext;
+    /** Recorded on the audit event; also the session kept when exceptSessionId is set. */
+    initiatingSessionId?: string;
+    reason?: SessionRevocationReason;
+    eventType?: AuthEventType;
+    /** Left active. Typically the caller's own session. */
+    exceptSessionId?: string;
+}
 
 export interface LogoutResponse {
     success: true;

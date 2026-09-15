@@ -279,7 +279,11 @@ describe('SessionService rotation concurrency (PostgreSQL)', () => {
         context,
       });
 
-      const revokedCount = await service.revokeAllSessions(userId, first.sessionId, context);
+      const revokedCount = await service.revokeAllSessions({
+        userId,
+        initiatingSessionId: first.sessionId,
+        context,
+      });
       expect(revokedCount).toBe(2);
 
       const sessions = await prisma.session.findMany({

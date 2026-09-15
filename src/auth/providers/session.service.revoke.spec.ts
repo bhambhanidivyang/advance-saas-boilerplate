@@ -146,7 +146,11 @@ describe('SessionService revocation', () => {
                 { id: 'session-3' },
             ]);
 
-            const revoked = await service.revokeAllSessions('user-1', 'session-1', context);
+            const revoked = await service.revokeAllSessions({
+                userId: 'user-1',
+                initiatingSessionId: 'session-1',
+                context,
+            });
 
             expect(revoked).toBe(3);
             // Ids are read first so the revoked set is known exactly, which the
@@ -176,13 +180,59 @@ describe('SessionService revocation', () => {
                 deviceId: 'device-1',
                 revokedCount: 3,
                 initiatingSessionId: 'session-1',
+                keptSessionId: null,
             });
+        });
+
+
+        it('defaults to LOGOUT_ALL but accepts another reason and event type', async () => {
+            tx.session.findMany.mockResolvedValue([{ id: 'session-2' }]);
+
+            await service.revokeAllSessions({
+                userId: 'user-1',
+                initiatingSessionId: 'session-1',
+                context,
+                reason: SessionRevocationReason.PASSWORD_CHANGED,
+                eventType: AuthEventType.PASSWORD_CHANGED,
+            });
+
+            expect(tx.session.updateMany).toHaveBeenCalledWith({
+                where: { id: { in: ['session-2'] } },
+                data: { revokedAt: NOW, revocationReason: SessionRevocationReason.PASSWORD_CHANGED },
+            });
+            expect(tx.authEvent.create.mock.calls[0][0].data.eventType).toBe(
+                AuthEventType.PASSWORD_CHANGED,
+            );
+        });
+
+        // What a password change needs: end every other device, keep this one.
+        it('leaves the excepted session untouched', async () => {
+            tx.session.findMany.mockResolvedValue([{ id: 'session-2' }, { id: 'session-3' }]);
+
+            const revoked = await service.revokeAllSessions({
+                userId: 'user-1',
+                initiatingSessionId: 'session-1',
+                context,
+                exceptSessionId: 'session-1',
+            });
+
+            expect(revoked).toBe(2);
+            expect(tx.session.findMany).toHaveBeenCalledWith({
+                where: { userId: 'user-1', revokedAt: null, id: { not: 'session-1' } },
+                select: { id: true },
+            });
+            expect(tx.session.updateMany.mock.calls[0][0].where.id.in).not.toContain('session-1');
+            expect(tx.authEvent.create.mock.calls[0][0].data.metadata.keptSessionId).toBe(
+                'session-1',
+            );
         });
 
         it('writes nothing when the user has no active sessions', async () => {
             tx.session.findMany.mockResolvedValue([]);
 
-            await expect(service.revokeAllSessions('user-1', undefined, context)).resolves.toBe(0);
+            await expect(
+                service.revokeAllSessions({ userId: 'user-1', context }),
+            ).resolves.toBe(0);
 
             expect(tx.sessionRefreshToken.updateMany).not.toHaveBeenCalled();
             expect(tx.authEvent.create).not.toHaveBeenCalled();

@@ -392,10 +392,14 @@ describe('AuthController', () => {
 
       const response = await controller.logoutAll(user, req, res as unknown as Response);
 
-      expect(sessionService.revokeAllSessions).toHaveBeenCalledWith('user-1', 'session-1', {
-        ipAddress: '203.0.113.10',
-        userAgent: 'jest',
-        deviceId: 'device-1',
+      expect(sessionService.revokeAllSessions).toHaveBeenCalledWith({
+        userId: 'user-1',
+        initiatingSessionId: 'session-1',
+        context: {
+          ipAddress: '203.0.113.10',
+          userAgent: 'jest',
+          deviceId: 'device-1',
+        },
       });
       expect(res.clearCookie).toHaveBeenCalledWith(
         'mn_rt',

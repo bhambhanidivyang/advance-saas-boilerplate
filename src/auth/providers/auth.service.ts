@@ -348,7 +348,12 @@ export class AuthService {
             where: {
                 email,
                 user: {
-                    status: UserStatus.ACTIVE
+                    status: UserStatus.ACTIVE,
+                    // Checked explicitly rather than relying on deletion also moving
+                    // status off ACTIVE. Nothing in the schema enforces that pairing,
+                    // and authentication must not depend on another column being
+                    // maintained correctly forever.
+                    deletedAt: null,
                 },
             },
             select: {

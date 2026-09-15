@@ -50,6 +50,7 @@ describe('SessionService.createSession', () => {
     // transaction client would throw instead of silently succeeding.
     let prisma: { $transaction: jest.Mock };
     let tokenService: { generateAccessToken: jest.Mock };
+    let denylist: { revoke: jest.Mock; isRevoked: jest.Mock };
 
     function buildService(
         ttls: { absolute: number; refresh: number; maxActive?: number } = {
@@ -61,7 +62,7 @@ describe('SessionService.createSession', () => {
             createConfig(ttls) as unknown as ConfigService,
             prisma as unknown as PrismaService,
             tokenService as unknown as TokenService,
-            { revoke: jest.fn(), isRevoked: jest.fn().mockResolvedValue(false) } as unknown as SessionDenylistService,
+            denylist as unknown as SessionDenylistService,
         );
     }
 
@@ -88,6 +89,8 @@ describe('SessionService.createSession', () => {
         prisma = {
             $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
         };
+
+        denylist = { revoke: jest.fn(), isRevoked: jest.fn().mockResolvedValue(false) };
 
         tokenService = {
             generateAccessToken: jest.fn().mockResolvedValue({ accessToken: 'access-token', expiresIn: 600 }),
@@ -319,6 +322,25 @@ describe('SessionService.createSession', () => {
                 'old-session-2',
                 'old-session-3',
             ]);
+        });
+
+        // Evicted sessions keep a usable access token for up to its TTL unless the
+        // denylist is told about them, so this is the assertion that makes eviction
+        // actually take effect rather than only being recorded.
+        it('denylists the evicted sessions after the transaction commits', async () => {
+            tx.session.findMany.mockResolvedValue(existingSessions(MAX_ACTIVE_PER_USER));
+
+            await service.createSession(args);
+
+            expect(denylist.revoke).toHaveBeenCalledWith(['old-session-1']);
+        });
+
+        it('denylists nothing when no session was evicted', async () => {
+            tx.session.findMany.mockResolvedValue(existingSessions(3));
+
+            await service.createSession(args);
+
+            expect(denylist.revoke).toHaveBeenCalledWith([]);
         });
 
         it('records one SESSION_REVOKED event naming the evicted sessions', async () => {
