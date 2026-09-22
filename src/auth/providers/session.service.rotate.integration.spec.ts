@@ -121,6 +121,7 @@ describe('SessionService rotation concurrency (PostgreSQL)', () => {
       userId: user.id,
       authMethod: AuthMethod.PASSWORD,
       emailVerified: true,
+      mustChangePassword: false,
       context,
     });
 
@@ -242,6 +243,7 @@ describe('SessionService rotation concurrency (PostgreSQL)', () => {
         userId,
         authMethod: AuthMethod.PASSWORD,
         emailVerified: true,
+        mustChangePassword: false,
         context,
       });
 
@@ -276,6 +278,7 @@ describe('SessionService rotation concurrency (PostgreSQL)', () => {
         userId,
         authMethod: AuthMethod.PASSWORD,
         emailVerified: true,
+        mustChangePassword: false,
         context,
       });
 

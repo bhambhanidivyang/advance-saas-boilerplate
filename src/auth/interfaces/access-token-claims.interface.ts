@@ -5,6 +5,7 @@ export interface MintAccessTokenArgs {
     sessionId: string;
     tokenFamilyId: string;
     emailVerified: boolean;
+    mustChangePassword: boolean;
     authMethod: AuthMethod;
 }
 
@@ -14,6 +15,7 @@ export interface AccessTokenClaims {
     sid: string;        // sessionId
     fam: string;        // tokenFamilyId, for correlating a rotation chain
     ev: boolean;        // emailVerified
+    mcp: boolean;       // mustChangePassword
     amr: AuthMethod[];  // authentication methods used
     jti: string;        // jti is a unique identifier for the token
     iss: string;        // Issuer

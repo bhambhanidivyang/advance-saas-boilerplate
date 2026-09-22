@@ -1,10 +1,11 @@
-import { AuthEventType, AuthMethod, SessionRevocationReason } from "src/generated/prisma/enums";
+import { AuthMethod } from "src/generated/prisma/enums";
 import { AuthContext } from "./auth-context.interface";
 
 export interface CreateSessionArgs {
     userId: string;
     authMethod: AuthMethod;
     emailVerified: boolean;
+    mustChangePassword: boolean;
     context: AuthContext;
 }
 
@@ -30,32 +31,19 @@ export type RotationOutcome =
           tokenFamilyId: string;
           authMethod: AuthMethod;
           emailVerified: boolean;
+          mustChangePassword: boolean;
           refreshToken: string;
           refreshTokenExpiresAt: Date;
           graceReplay: boolean;
       }
-    | {
-          kind: 'REJECTED';
-          reason: string;
-          /** Sessions revoked by the theft path, to be denylisted after commit. */
-          revokedSessionIds?: string[];
-      };
+    | { kind: 'REJECTED'; reason: string };
 
-/**
- * Bulk session revocation. The reason and event type are parameters because the
- * same operation serves several account-level actions (logout everywhere, a
- * password change, an admin action), and `exceptSessionId` exists so a password
- * change does not log the user out of the tab they just used.
- */
+/** Revokes every active session for a user (logout everywhere). */
 export interface RevokeAllSessionsArgs {
     userId: string;
     context: AuthContext;
-    /** Recorded on the audit event; also the session kept when exceptSessionId is set. */
+    /** The session that asked; recorded on the audit event. */
     initiatingSessionId?: string;
-    reason?: SessionRevocationReason;
-    eventType?: AuthEventType;
-    /** Left active. Typically the caller's own session. */
-    exceptSessionId?: string;
 }
 
 export interface LogoutResponse {

@@ -1,7 +1,6 @@
-import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, IsOptional, Matches } from "class-validator";
+import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, IsOptional } from "class-validator";
+import { MeetsPasswordPolicy } from "src/common/decorators/meets-password-policy.decorator";
 import { Transform } from "class-transformer";
-import { isNotCommonPassword } from "src/common/decorators/is-not-common-password.decorator";
-import { isNotBreachedPassword } from "src/common/decorators/is-not-breached.decorator";
 
 export class CreateNewUser {
     @IsString({ message: 'First name must be a string.' })
@@ -31,22 +30,6 @@ export class CreateNewUser {
     @Transform(({ value }) => typeof value === 'string' ? value.trim().toLowerCase() : value)
     email: string;
 
-    @IsString({ message: 'Password must be a string.' })
-    @IsNotEmpty({ message: 'Password is required.' })
-    @MinLength(8, { message: 'Password must be at least 8 characters long.' })
-    @MaxLength(128, { message: 'Password must not exceed 128 characters.' })
-    @Matches(
-        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/,
-        {
-        message:
-            'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character.',
-        },
-    )
-    @isNotCommonPassword({
-        message: 'This password is on a common blocklist and cannot be used.',
-      })
-    @isNotBreachedPassword({
-        message: 'This password has been exposed in a global data breach. Please pick a different one.',
-    })
+    @MeetsPasswordPolicy()
     password: string;
 }

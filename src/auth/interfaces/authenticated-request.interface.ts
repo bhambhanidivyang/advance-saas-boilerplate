@@ -6,6 +6,7 @@ export interface AuthenticatedUser {
     sessionId: string;
     tokenFamilyId: string;
     emailVerified: boolean;
+    mustChangePassword: boolean;
     authMethod: AuthMethod;
 }
 

@@ -6,6 +6,7 @@ import { SessionDenylistService } from "./session-denylist.service";
 import { generateRawToken, generateTokenHash } from "../utils/token.util";
 import { normalizeIpAddress } from "src/common/utils/ip.util";
 import { logAuditEvent } from 'src/common/audit/log-auth-event';
+import { runUnitOfWork, UnitOfWork } from 'src/common/prisma/unit-of-work';
 import { AuthEventType, AuthMethod, SessionRevocationReason, UserStatus } from "src/generated/prisma/enums";
 import { Prisma } from "src/generated/prisma/client";
 import { Injectable, UnauthorizedException } from "@nestjs/common";
@@ -32,7 +33,9 @@ export class SessionService {
         // compute session expiry
         const sessionExpiresAt = new Date(now.getTime() + absoluteTtl * 1000);
 
-        const result = await this.prisma.$transaction(async (tx) => {
+        const result = await runUnitOfWork(this.prisma, async (uow) => {
+            const { tx } = uow;
+
             // Only sessions that are actually usable count toward the cap: a session
             // past its absolute expiry is dead even though the lazy sweep has not
             // marked it yet, and should not block a new login.
@@ -51,35 +54,29 @@ export class SessionService {
             // guarantee is "we normally keep at most N sessions and evict the least
             // recently used when needed", NOT "a user can never exceed N". A hard cap
             // would mean Serializable on the login path.
-            let evictedSessionIds: string[] = [];
             const evictCount = activeSessions.length - maxSessions + 1;
             if (evictCount > 0) {
-                evictedSessionIds = activeSessions
-                    .slice(0, evictCount)
-                    .map((session) => session.id);
-                await tx.session.updateMany({
-                    where: { id: { in: evictedSessionIds }, revokedAt: null },
-                    data: {
-                        revokedAt: now,
-                        revocationReason: SessionRevocationReason.SESSION_LIMIT,
-                    },
-                });
-                await tx.sessionRefreshToken.updateMany({
-                    where: { sessionId: { in: evictedSessionIds }, revokedAt: null },
-                    data: { revokedAt: now },
-                });
-                await logAuditEvent({
-                    tx,
-                    userId: args.userId,
-                    eventType: AuthEventType.SESSION_REVOKED,
-                    ipAddress: args.context.ipAddress,
-                    userAgent: args.context.userAgent,
-                    metadata: {
-                        deviceId: args.context.deviceId,
-                        maxActivePerUser: maxSessions,
-                        evictedSessionIds,
-                    },
-                });
+                const evictedSessionIds = await this.revokeSessions(
+                    uow,
+                    { id: { in: activeSessions.slice(0, evictCount).map((session) => session.id) } },
+                    SessionRevocationReason.SESSION_LIMIT,
+                    now,
+                );
+
+                if (evictedSessionIds.length > 0) {
+                    await logAuditEvent({
+                        tx,
+                        userId: args.userId,
+                        eventType: AuthEventType.SESSION_REVOKED,
+                        ipAddress: args.context.ipAddress,
+                        userAgent: args.context.userAgent,
+                        metadata: {
+                            deviceId: args.context.deviceId,
+                            maxActivePerUser: maxSessions,
+                            evictedSessionIds,
+                        },
+                    });
+                }
             }
 
             // create session
@@ -111,9 +108,7 @@ export class SessionService {
                 metadata: {deviceId: args.context.deviceId}
             });
 
-            // return info to be used for further ops
             return {
-                evictedSessionIds,
                 sessionId: session.id,
                 tokenFamilyId: session.tokenFamilyId,
                 refreshToken: refresh.refreshToken,
@@ -121,15 +116,14 @@ export class SessionService {
             }
         });
 
-        // After commit: an entry written inside the transaction would survive a
-        // rollback and lock the user out of a session that is still live.
-        await this.denylist.revoke(result.evictedSessionIds);
-        // create access token
+        // create access token — after commit: it needs the session id, and a signing
+        // failure inside the transaction would roll back a perfectly good session.
         const token = await this.tokenService.generateAccessToken({
             userId: args.userId,
             sessionId: result.sessionId,
             tokenFamilyId: result.tokenFamilyId,
             emailVerified: args.emailVerified,
+            mustChangePassword: args.mustChangePassword,
             authMethod: args.authMethod,
         });
 
@@ -161,7 +155,9 @@ export class SessionService {
         // generate token hash from rawtoken
         const tokenHash = generateTokenHash(rawToken);
 
-        const outcome = await this.prisma.$transaction<RotationOutcome>(async (tx) => {
+        const outcome = await runUnitOfWork<RotationOutcome>(this.prisma, async (uow) => {
+            const { tx } = uow;
+
             // read stored refresh token
             const stored = await tx.sessionRefreshToken.findUnique({
                 where: { tokenHash },
@@ -178,7 +174,7 @@ export class SessionService {
                             authMethod: true,
                             expiresAt: true,
                             revokedAt: true,
-                            user: { select: { status: true } },
+                            user: { select: { status: true, mustChangePassword: true } },
                         },
                     },
                 },
@@ -199,10 +195,7 @@ export class SessionService {
             // Absolute lifetime reached. Swept lazily here so expired sessions do not
             // need a background job to be marked; this write must commit.
             if (session.expiresAt <= now) {
-                await tx.session.updateMany({
-                    where: { id: session.id, revokedAt: null },
-                    data: { revokedAt: now, revocationReason: SessionRevocationReason.EXPIRED },
-                });
+                await this.revokeSessions(uow, { id: session.id }, SessionRevocationReason.EXPIRED, now);
                 return { kind: 'REJECTED', reason: REFRESH_FAILURE_REASON.SESSION_EXPIRED };
             }
 
@@ -232,18 +225,12 @@ export class SessionService {
             // If stored token is already consumed
             if (stored.usedAt) {
                 if (!this.isWithinGrace(stored.usedAt, now, graceSeconds)) {
-                    const revokedSessionIds = await this.revokeTokenFamily(
-                        tx, session, stored.id, stored.usedAt, now, context,
-                    );
-                    return {
-                        kind: 'REJECTED',
-                        reason: REFRESH_FAILURE_REASON.TOKEN_REUSE,
-                        revokedSessionIds,
-                    };
+                    await this.revokeTokenFamily(uow, session, stored.id, stored.usedAt, now, context);
+                    return { kind: 'REJECTED', reason: REFRESH_FAILURE_REASON.TOKEN_REUSE };
                 }
                 // Benign double-submit: two in-flight requests from the same client.
                 graceReplay = true;
-            } 
+            }
             // If stored token is not consumed
             else {
                 // The single-use guarantee: whoever flips usedAt from null wins. Under
@@ -261,14 +248,10 @@ export class SessionService {
                     });
 
                     if (!winner?.usedAt || !this.isWithinGrace(winner.usedAt, now, graceSeconds)) {
-                        const revokedSessionIds = await this.revokeTokenFamily(
-                            tx, session, stored.id, winner?.usedAt ?? null, now, context,
+                        await this.revokeTokenFamily(
+                            uow, session, stored.id, winner?.usedAt ?? null, now, context,
                         );
-                        return {
-                            kind: 'REJECTED',
-                            reason: REFRESH_FAILURE_REASON.TOKEN_REUSE,
-                            revokedSessionIds,
-                        };
+                        return { kind: 'REJECTED', reason: REFRESH_FAILURE_REASON.TOKEN_REUSE };
                     }
                     graceReplay = true;
                 }
@@ -316,6 +299,7 @@ export class SessionService {
                 tokenFamilyId: session.tokenFamilyId,
                 authMethod: session.authMethod,
                 emailVerified: primaryEmail?.isVerified ?? false,
+                mustChangePassword: session.user.mustChangePassword ?? false,
                 refreshToken: refresh.refreshToken,
                 refreshTokenExpiresAt: refresh.refreshTokenExpiresAt,
                 graceReplay,
@@ -323,8 +307,6 @@ export class SessionService {
         });
 
         if (outcome.kind === 'REJECTED') {
-            await this.denylist.revoke(outcome.revokedSessionIds ?? []);
-
             // One message for every rejection. Telling the caller whether a token was
             // unknown, expired or reused is reconnaissance for someone probing a
             // stolen token; the distinction lives in the audit log only.
@@ -336,6 +318,7 @@ export class SessionService {
             sessionId: outcome.sessionId,
             tokenFamilyId: outcome.tokenFamilyId,
             emailVerified: outcome.emailVerified,
+            mustChangePassword: outcome.mustChangePassword,
             authMethod: outcome.authMethod,
         });
 
@@ -349,14 +332,183 @@ export class SessionService {
         };
     }
 
+    /**
+     * Revokes one session and every refresh token under it.
+     *
+     * Idempotent by design: logging out twice, or a retried request, must succeed
+     * rather than 400. revokeSessions skips an already-revoked session, and a no-op
+     * writes no audit event — a logout that did not happen should not be recorded
+     * as one.
+     */
+    async revokeSession(sessionId: string, context: AuthContext): Promise<void> {
+        const now = new Date();
+
+        await runUnitOfWork(this.prisma, async (uow) => {
+            const session = await uow.tx.session.findUnique({
+                where: { id: sessionId },
+                select: { userId: true, authMethod: true },
+            });
+
+            if (!session) {
+                return;
+            }
+
+            const revokedSessionIds = await this.revokeSessions(
+                uow,
+                { id: sessionId },
+                SessionRevocationReason.LOGOUT,
+                now,
+            );
+
+            // Already revoked: nothing changed, so record nothing.
+            if (revokedSessionIds.length === 0) {
+                return;
+            }
+
+            await logAuditEvent({
+                tx: uow.tx,
+                userId: session.userId,
+                sessionId,
+                eventType: AuthEventType.LOGOUT,
+                authMethod: session.authMethod,
+                ipAddress: context.ipAddress,
+                userAgent: context.userAgent,
+                metadata: { deviceId: context.deviceId },
+            });
+        });
+    }
+
+    /**
+     * Logout path for a client holding only the refresh cookie — which is the normal
+     * case, since the access token may well have expired by the time someone clicks
+     * log out. Resolving then revoking is safe without a shared transaction because
+     * revocation is idempotent.
+     */
+    async revokeSessionByRefreshToken(rawToken: string, context: AuthContext): Promise<void> {
+        const stored = await this.prisma.sessionRefreshToken.findUnique({
+            where: { tokenHash: generateTokenHash(rawToken) },
+            select: { sessionId: true },
+        });
+
+        if (!stored) {
+            return;
+        }
+
+        await this.revokeSession(stored.sessionId, context);
+    }
+
+    /**
+     * Revokes every active session for a user. Writes ONE audit event carrying the
+     * count rather than one per session: this is a single user action.
+     */
+    async revokeAllSessions(args: RevokeAllSessionsArgs): Promise<number> {
+        const { userId, context, initiatingSessionId } = args;
+
+        const now = new Date();
+
+        const revokedSessionIds = await runUnitOfWork(this.prisma, async (uow) => {
+            const sessionIds = await this.revokeSessions(
+                uow,
+                { userId },
+                SessionRevocationReason.LOGOUT_ALL,
+                now,
+            );
+
+            if (sessionIds.length > 0) {
+                await logAuditEvent({
+                    tx: uow.tx,
+                    userId,
+                    sessionId: initiatingSessionId,
+                    eventType: AuthEventType.LOGOUT_ALL,
+                    ipAddress: context.ipAddress,
+                    userAgent: context.userAgent,
+                    metadata: {
+                        deviceId: context.deviceId,
+                        revokedCount: sessionIds.length,
+                        initiatingSessionId: initiatingSessionId ?? null,
+                    },
+                });
+            }
+
+            return sessionIds;
+        });
+
+        return revokedSessionIds.length;
+    }
+
+    /**
+     * THE session revocation. Every path that ends a session — logout, logout-all,
+     * eviction at the session cap, the lazy expiry sweep, theft detection, a password
+     * change — goes through here, so what "revoked" means cannot drift between them.
+     *
+     * Revokes the still-active sessions matching `where`, retires their refresh
+     * tokens, and queues their denylist entries to run after commit. Returns the ids
+     * it actually revoked (already-revoked sessions are skipped) so the caller can
+     * tell whether anything happened. Auditing stays with the caller, because each
+     * path records a different event.
+     */
+    async revokeSessions(
+        uow: UnitOfWork,
+        where: Prisma.SessionWhereInput,
+        reason: SessionRevocationReason,
+        now: Date,
+    ): Promise<string[]> {
+        // Ids are read first so the exact set revoked here is known: needed for the
+        // denylist, and it keeps the token update off sessions revoked earlier.
+        const sessions = await uow.tx.session.findMany({
+            where: { ...where, revokedAt: null },
+            select: { id: true },
+        });
+
+        const sessionIds = sessions.map((session) => session.id);
+
+        if (sessionIds.length === 0) {
+            return [];
+        }
+
+        await uow.tx.session.updateMany({
+            where: { id: { in: sessionIds } },
+            data: { revokedAt: now, revocationReason: reason },
+        });
+
+        await this.retireRefreshTokens(uow.tx, sessionIds, now);
+
+        // A revoked session's access tokens stay valid until they expire; the denylist
+        // closes that window. Queued for after commit so a rollback can never leave a
+        // live session denylisted.
+        uow.afterCommit(() => this.denylist.revoke(sessionIds));
+
+        return sessionIds;
+    }
+
+    /**
+     * Swaps every refresh token of one session for a single fresh one. Used after a
+     * credential change: the session survives, but any refresh token issued before
+     * the change — including one that may have leaked — stops working.
+     *
+     * Old tokens are retired (revoked) rather than marked used. If the response
+     * carrying the new cookie is lost, the client's next refresh presents a revoked
+     * token and gets a plain 401; a used token would instead trip reuse detection
+     * after the grace window and raise a false theft alarm.
+     */
+    async reissueRefreshToken(
+        uow: UnitOfWork,
+        sessionId: string,
+        sessionExpiresAt: Date,
+        now: Date,
+    ): Promise<{ refreshToken: string; refreshTokenExpiresAt: Date }> {
+        await this.retireRefreshTokens(uow.tx, [sessionId], now);
+        return this.createRefreshToken(uow.tx, sessionId, sessionExpiresAt, now);
+    }
+
     private isWithinGrace(usedAt: Date, now: Date, graceSeconds: number): boolean {
         return now.getTime() - usedAt.getTime() <= graceSeconds * 1000;
     }
 
     /**
      * Creates one refresh token row and returns the raw value, which is the only
-     * moment it exists — the database keeps just its hash. Shared by login and
-     * rotation so the clamp and the hashing cannot drift apart between them.
+     * moment it exists — the database keeps just its hash. Shared by login, rotation
+     * and reissue so the clamp and the hashing cannot drift apart between them.
      */
     private async createRefreshToken(
         tx: Prisma.TransactionClient,
@@ -384,42 +536,39 @@ export class SessionService {
         return { refreshToken, refreshTokenExpiresAt };
     }
 
+    /** Shared by revocation and reissue: both retire every live token of a session. */
+    private async retireRefreshTokens(
+        tx: Prisma.TransactionClient,
+        sessionIds: string[],
+        now: Date,
+    ): Promise<void> {
+        await tx.sessionRefreshToken.updateMany({
+            where: { sessionId: { in: sessionIds }, revokedAt: null },
+            data: { revokedAt: now },
+        });
+    }
+
     /**
      * A used token replayed outside the grace window means two parties hold it.
      * Assume theft and revoke the whole family, not just this session.
      */
     private async revokeTokenFamily(
-        tx: Prisma.TransactionClient,
+        uow: UnitOfWork,
         session: { id: string; userId: string; tokenFamilyId: string; authMethod: AuthMethod },
         presentedTokenId: string,
         presentedTokenUsedAt: Date | null,
         now: Date,
         context: AuthContext,
-    ): Promise<string[]> {
-        await tx.session.updateMany({
-            where: {
-                userId: session.userId,
-                tokenFamilyId: session.tokenFamilyId,
-                revokedAt: null,
-            },
-            data: { revokedAt: now, revocationReason: SessionRevocationReason.TOKEN_REUSE },
-        });
-
-        const familySessions = await tx.session.findMany({
-            where: { userId: session.userId, tokenFamilyId: session.tokenFamilyId },
-            select: { id: true },
-        });
-
-        await tx.sessionRefreshToken.updateMany({
-            where: {
-                sessionId: { in: familySessions.map((familySession) => familySession.id) },
-                revokedAt: null,
-            },
-            data: { revokedAt: now },
-        });
+    ): Promise<void> {
+        const revokedSessionIds = await this.revokeSessions(
+            uow,
+            { userId: session.userId, tokenFamilyId: session.tokenFamilyId },
+            SessionRevocationReason.TOKEN_REUSE,
+            now,
+        );
 
         await logAuditEvent({
-            tx,
+            tx: uow.tx,
             userId: session.userId,
             sessionId: session.id,
             eventType: AuthEventType.TOKEN_REUSE_DETECTED,
@@ -431,161 +580,8 @@ export class SessionService {
                 tokenFamilyId: session.tokenFamilyId,
                 presentedTokenId,
                 presentedTokenUsedAt: presentedTokenUsedAt?.toISOString() ?? null,
-                revokedSessions: familySessions.length,
+                revokedSessions: revokedSessionIds.length,
             },
         });
-
-        return familySessions.map((familySession) => familySession.id);
-    }
-
-    /**
-     * Revokes one session and every refresh token under it.
-     *
-     * Idempotent by design: logging out twice, or a retried request, must succeed
-     * rather than 400. The `revokedAt: null` guard is what makes the second call a
-     * no-op, and a no-op writes no audit event — a logout that did not happen
-     * should not be recorded as one.
-     *
-     * Note the access token issued for this session stays valid until it expires
-     * (auth.jwt.accessTtlSeconds). Revocation is immediate for refresh, eventual
-     * for access; closing that gap needs the denylist behind
-     * auth.session.denylistEnabled.
-     */
-    async revokeSession(sessionId: string, context: AuthContext): Promise<void> {
-        const now = new Date();
-
-        const wasRevoked = await this.prisma.$transaction(async (tx) => {
-            const session = await tx.session.findUnique({
-                where: { id: sessionId },
-                select: { userId: true, authMethod: true },
-            });
-
-            if (!session) {
-                return false;
-            }
-
-            const revoked = await tx.session.updateMany({
-                where: { id: sessionId, revokedAt: null },
-                data: { revokedAt: now, revocationReason: SessionRevocationReason.LOGOUT },
-            });
-
-            // Already revoked: nothing changed, so record nothing.
-            if (revoked.count === 0) {
-                return false;
-            }
-
-            // A session may legitimately have no unrevoked tokens left, so the count
-            // here is not a reason to skip the audit event.
-            await tx.sessionRefreshToken.updateMany({
-                where: { sessionId, revokedAt: null },
-                data: { revokedAt: now },
-            });
-
-            await logAuditEvent({
-                tx,
-                userId: session.userId,
-                sessionId,
-                eventType: AuthEventType.LOGOUT,
-                authMethod: session.authMethod,
-                ipAddress: context.ipAddress,
-                userAgent: context.userAgent,
-                metadata: { deviceId: context.deviceId },
-            });
-
-            return true;
-        });
-
-        if (wasRevoked) {
-            await this.denylist.revoke([sessionId]);
-        }
-    }
-
-    /**
-     * Logout path for a client holding only the refresh cookie — which is the normal
-     * case, since the access token may well have expired by the time someone clicks
-     * log out. Resolving then revoking is safe without a shared transaction because
-     * revocation is idempotent.
-     */
-    async revokeSessionByRefreshToken(rawToken: string, context: AuthContext): Promise<void> {
-        const stored = await this.prisma.sessionRefreshToken.findUnique({
-            where: { tokenHash: generateTokenHash(rawToken) },
-            select: { sessionId: true },
-        });
-
-        if (!stored) {
-            return;
-        }
-
-        await this.revokeSession(stored.sessionId, context);
-    }
-
-    /**
-     * Revokes every active session for a user. Writes ONE audit event carrying the
-     * count rather than one per session: this is a single user action.
-     */
-    async revokeAllSessions(args: RevokeAllSessionsArgs): Promise<number> {
-        const {
-            userId,
-            context,
-            initiatingSessionId,
-            reason = SessionRevocationReason.LOGOUT_ALL,
-            eventType = AuthEventType.LOGOUT_ALL,
-            exceptSessionId,
-        } = args;
-
-        const now = new Date();
-
-        // Ids are read first so the exact set revoked here is known: needed for the
-        // denylist, and it keeps the token update from touching sessions that were
-        // already revoked earlier.
-        const revokedSessionIds = await this.prisma.$transaction(async (tx) => {
-            const activeSessions = await tx.session.findMany({
-                where: {
-                    userId,
-                    revokedAt: null,
-                    // A password change revokes every OTHER device but leaves the
-                    // caller signed in where they are.
-                    ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}),
-                },
-                select: { id: true },
-            });
-
-            if (activeSessions.length === 0) {
-                return [];
-            }
-
-            const sessionIds = activeSessions.map((session) => session.id);
-
-            await tx.session.updateMany({
-                where: { id: { in: sessionIds } },
-                data: { revokedAt: now, revocationReason: reason },
-            });
-
-            await tx.sessionRefreshToken.updateMany({
-                where: { sessionId: { in: sessionIds }, revokedAt: null },
-                data: { revokedAt: now },
-            });
-
-            await logAuditEvent({
-                tx,
-                userId,
-                sessionId: initiatingSessionId,
-                eventType,
-                ipAddress: context.ipAddress,
-                userAgent: context.userAgent,
-                metadata: {
-                    deviceId: context.deviceId,
-                    revokedCount: sessionIds.length,
-                    initiatingSessionId: initiatingSessionId ?? null,
-                    keptSessionId: exceptSessionId ?? null,
-                },
-            });
-
-            return sessionIds;
-        });
-
-        await this.denylist.revoke(revokedSessionIds);
-
-        return revokedSessionIds.length;
     }
 }

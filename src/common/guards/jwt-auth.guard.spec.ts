@@ -10,6 +10,7 @@ const validClaims = {
     sid: 'session-1',
     fam: 'family-1',
     ev: true,
+    mcp: false,
     amr: [AuthMethod.PASSWORD],
     jti: 'jti-1',
     iss: 'mynest-api-test',
@@ -66,6 +67,7 @@ describe('JwtAuthGuard', () => {
             sessionId: 'session-1',
             tokenFamilyId: 'family-1',
             emailVerified: true,
+            mustChangePassword: false,
             authMethod: AuthMethod.PASSWORD,
         });
     });

@@ -67,8 +67,8 @@ export default () => ({
             accessKid: process.env.JWT_ACCESS_KID,
         },
         session: {
-            absoluteTtlSeconds: Number(process.env.SESSION_ABSOLUTE_TTL_SECONDS) || 1209600,
-            refreshTtlSeconds: Number(process.env.SESSION_REFRESH_TTL_SECONDS) || 2592000,
+            absoluteTtlSeconds: Number(process.env.SESSION_ABSOLUTE_TTL_SECONDS) || 2592000,
+            refreshTtlSeconds: Number(process.env.SESSION_REFRESH_TTL_SECONDS) || 1209600,
             refreshReuseGraceSeconds: Number(process.env.SESSION_REFRESH_REUSE_GRACE_SECONDS) || 15,
             maxActivePerUser: Number(process.env.SESSION_MAX_ACTIVE_PER_USER) || 10,
             denylistEnabled: process.env.SESSION_DENYLIST_ENABLED === 'true',

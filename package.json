@@ -17,7 +17,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e": "NODE_OPTIONS=\"${NODE_OPTIONS:-} --experimental-vm-modules\" THROTTLE_AUTH_LIMIT=1000 SESSION_DENYLIST_ENABLED=true jest --config ./test/jest-e2e.json --runInBand",
     "test:integration": "NODE_OPTIONS=\"${NODE_OPTIONS:-} --experimental-vm-modules\" jest --runInBand --testRegex='.*\\.integration\\.spec\\.ts$' --testPathIgnorePatterns=/node_modules/"
   },
   "dependencies": {

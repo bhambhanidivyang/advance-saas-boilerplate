@@ -43,7 +43,7 @@ function storedToken(
             authMethod: AuthMethod.PASSWORD,
             expiresAt: new Date('2026-06-20T00:00:00.000Z'),
             revokedAt: null,
-            user: { status: UserStatus.ACTIVE },
+            user: { status: UserStatus.ACTIVE, mustChangePassword: false },
             ...sessionOverrides,
         },
     };
@@ -59,6 +59,7 @@ describe('SessionService.rotateRefreshToken', () => {
     };
     let prisma: { $transaction: jest.Mock };
     let tokenService: { generateAccessToken: jest.Mock };
+    let denylist: { revoke: jest.Mock };
     // Pins the "return an outcome, never throw inside the transaction" rule: if the
     // callback threw, this stays false and the writes would have rolled back.
     let transactionCommitted: boolean;
@@ -110,6 +111,8 @@ describe('SessionService.rotateRefreshToken', () => {
                 .mockResolvedValue({ accessToken: 'access-token', expiresIn: 600 }),
         };
 
+        denylist = { revoke: jest.fn() };
+
         const config = {
             getOrThrow: jest.fn((key: string) => {
                 if (key === 'auth.session.refreshReuseGraceSeconds') return GRACE_SECONDS;
@@ -122,7 +125,7 @@ describe('SessionService.rotateRefreshToken', () => {
             config as unknown as ConfigService,
             prisma as unknown as PrismaService,
             tokenService as unknown as TokenService,
-            { revoke: jest.fn(), isRevoked: jest.fn().mockResolvedValue(false) } as unknown as SessionDenylistService,
+            denylist as unknown as SessionDenylistService,
         );
     });
 
@@ -154,7 +157,7 @@ describe('SessionService.rotateRefreshToken', () => {
 
         it('rejects a suspended user, so suspension ends refreshing immediately', async () => {
             tx.sessionRefreshToken.findUnique.mockResolvedValue(
-                storedToken({}, { user: { status: UserStatus.SUSPENDED } }),
+                storedToken({}, { user: { status: UserStatus.SUSPENDED, mustChangePassword: false } }),
             );
 
             await expect(service.rotateRefreshToken(RAW_TOKEN, context)).rejects.toBeInstanceOf(
@@ -200,8 +203,12 @@ describe('SessionService.rotateRefreshToken', () => {
             );
 
             expect(transactionCommitted).toBe(true);
-            expect(tx.session.updateMany).toHaveBeenCalledWith({
+            expect(tx.session.findMany).toHaveBeenCalledWith({
                 where: { id: 'session-1', revokedAt: null },
+                select: { id: true },
+            });
+            expect(tx.session.updateMany).toHaveBeenCalledWith({
+                where: { id: { in: ['session-1'] } },
                 data: { revokedAt: NOW, revocationReason: SessionRevocationReason.EXPIRED },
             });
         });
@@ -265,6 +272,7 @@ describe('SessionService.rotateRefreshToken', () => {
                 sessionId: 'session-1',
                 tokenFamilyId: 'family-1',
                 emailVerified: false,
+                mustChangePassword: false,
                 authMethod: AuthMethod.PASSWORD,
             });
             expect(result.accessToken).toBe('access-token');
@@ -316,14 +324,20 @@ describe('SessionService.rotateRefreshToken', () => {
             );
 
             expect(transactionCommitted).toBe(true);
-            expect(tx.session.updateMany).toHaveBeenCalledWith({
+            expect(tx.session.findMany).toHaveBeenCalledWith({
                 where: { userId: 'user-1', tokenFamilyId: 'family-1', revokedAt: null },
+                select: { id: true },
+            });
+            expect(tx.session.updateMany).toHaveBeenCalledWith({
+                where: { id: { in: ['session-1', 'session-2'] } },
                 data: { revokedAt: NOW, revocationReason: SessionRevocationReason.TOKEN_REUSE },
             });
             expect(tx.sessionRefreshToken.updateMany).toHaveBeenCalledWith({
                 where: { sessionId: { in: ['session-1', 'session-2'] }, revokedAt: null },
                 data: { revokedAt: NOW },
             });
+            // The stolen token's family must also lose its live access tokens.
+            expect(denylist.revoke).toHaveBeenCalledWith(['session-1', 'session-2']);
         });
 
         it('records TOKEN_REUSE_DETECTED and issues no replacement', async () => {

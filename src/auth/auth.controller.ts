@@ -10,11 +10,15 @@ import { Public } from 'src/common/decorators/public.decorator';
 import { LoginResponse, RefreshResponse } from './interfaces/login.interface';
 import { LogoutResponse } from './interfaces/session.interface';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { AllowPasswordChangePending } from 'src/common/decorators/allow-password-change-pending.decorator';
 import type { AuthenticatedUser } from './interfaces/authenticated-request.interface';
 import { ConfigService } from '@nestjs/config';
 import { buildCookieOptionsFromConfig } from './utils/session-cookie.util';
 import { SessionService } from './providers/session.service';
 import { GENERIC_REFRESH_FAILURE } from './constants/auth.constants';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { ChangePasswordResponse } from './interfaces/password.interface';
+import { PasswordService } from './providers/password.service';
 
 export interface VerifyEmailParams {
     tokenId?: string;
@@ -27,6 +31,7 @@ export class AuthController {
     constructor(
         private readonly authService: AuthService,
         private readonly sessionService: SessionService,
+        private readonly passwordService: PasswordService,
         private readonly config: ConfigService
     ) {}
 
@@ -146,6 +151,7 @@ export class AuthController {
 
     // Guarded, unlike /logout: revoking every device is a bigger hammer, so it is
     // worth requiring a currently valid access token.
+    @AllowPasswordChangePending()
     @SkipThrottle({ auth: false })
     @Post('logout-all')
     async logoutAll (
@@ -165,5 +171,39 @@ export class AuthController {
         );
 
         return { success: true, revokedSessions };
+    }
+
+    // Guarded (no @Public): only an authenticated session may change its password.
+    // Auth-throttled because it verifies a password, which makes it a guessing
+    // surface for anyone holding a stolen access token.
+    @AllowPasswordChangePending()
+    @SkipThrottle({ auth: false })
+    @Post('change-password')
+    async changePassword (
+        @Body() body: ChangePasswordDto,
+        @CurrentUser() user: AuthenticatedUser,
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response
+    ): Promise<ChangePasswordResponse> {
+        // The session comes from the verified access token's sid, not the refresh
+        // cookie, so a Bearer-only client can change its password too.
+        const result = await this.passwordService.changePassword({
+            userId: user.userId,
+            sessionId: user.sessionId,
+            currentPassword: body.currentPassword,
+            newPassword: body.newPassword,
+            context: buildAuthContext(req),
+        });
+
+        // This session's refresh tokens were all retired, so the client must receive
+        // the replacement or its next refresh fails.
+        res.cookie(
+            this.config.getOrThrow<string>('auth.cookie.name'),
+            result.refreshToken,
+            buildCookieOptionsFromConfig(this.config, result.refreshTokenExpiresAt)
+        );
+
+        // Field by field: the raw refresh token belongs in the cookie only.
+        return { success: true, revokedSessions: result.revokedSessions };
     }
 }

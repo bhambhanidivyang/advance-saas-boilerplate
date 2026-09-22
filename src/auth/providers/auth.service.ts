@@ -2,9 +2,9 @@ import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/
 import { CreateNewUser } from '../dto/create-new-user.dto';
 import { normalizeEmail } from '../utils/auth.util';
 import { generateRawToken, generateTokenHash } from '../utils/token.util';
+import { hashPassword, passwordNeedsRehash, verifyPassword } from '../utils/password-hash.util';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthEventType, AuthMethod, Prisma, UserStatus, UserTokenType } from 'src/generated/prisma/client';
-import * as argon2 from 'argon2';
 import { EmailService } from 'src/email/email.service';
 import { EmailJobType } from 'src/email/interfaces/email-job.interface';
 import { ConfigService } from '@nestjs/config';
@@ -21,27 +21,6 @@ import { logAuditEvent } from 'src/common/audit/log-auth-event';
 import { SessionService } from './session.service';
 import { LoginResult } from '../interfaces/login.interface';
 import { AuthenticationResult } from '../interfaces/authentication-result.interface';
-
-/**
- * argon2 cost parameters, pinned rather than left to library defaults so an
- * upgrade of the argon2 package cannot silently change our security posture or
- * verification latency. These values match argon2 0.45.1's defaults, so pinning
- * them is a no-op today.
- *
- * needsRehash() compares ONLY these cost fields — it ignores `type` entirely —
- * which is why the variant is kept separate below.
- */
-const PASSWORD_HASH_COSTS = {
-    memoryCost: 65536,
-    timeCost: 3,
-    parallelism: 4,
-} as const;
-
-const PASSWORD_HASH_OPTIONS = {
-    ...PASSWORD_HASH_COSTS,
-    type: argon2.argon2id,
-} as const;
-
 
 @Injectable()
 export class AuthService {
@@ -64,7 +43,7 @@ export class AuthService {
         const normalizedEmail = normalizeEmail(email);
 
         // Hashing the password
-        const passwordHash = await this.hashPassword(password);
+        const passwordHash = await hashPassword(password);
 
         try {
             // Adding new user using transaction
@@ -157,7 +136,7 @@ export class AuthService {
                 ? await this.dummyPasswordHash
                 : user.passwordHash;
 
-        const valid = await this.verifyPassword(
+        const valid = await verifyPassword(
             password,
             hashToVerify,
         );
@@ -211,6 +190,7 @@ export class AuthService {
             userId: authentication.userId,
             authMethod: authentication.authMethod,
             emailVerified: authentication.emailVerified,
+            mustChangePassword: authentication.mustChangePassword,
             context,
         });
 
@@ -405,12 +385,12 @@ export class AuthService {
         // generate a raw token
         const rawToken = generateRawToken();
         // hash the raw token
-        const hashedToken = generateTokenHash(rawToken);
+        const tokenHash = generateTokenHash(rawToken);
         // create a new verification token
         const token = await tx.userToken.create({
             data: {
                 userId,
-                tokenHash: hashedToken,
+                tokenHash,
                 type,
                 expiresAt: new Date(Date.now() + 1000 * 60 * 60 * this.verificationTokenTtl),
                 metaData: {
@@ -559,7 +539,7 @@ export class AuthService {
         const { tx, userEmailId } = args;
         try {
             // Safely update email record
-            return tx.userEmail.update({
+            return await tx.userEmail.update({
                 where: { id: userEmailId },
                 data: {
                     isVerified: true,
@@ -591,18 +571,7 @@ export class AuthService {
         });
     }
 
-    // hash a password
-    private async hashPassword(password: string): Promise<string> {
-        return argon2.hash(password, PASSWORD_HASH_OPTIONS);
-    }
 
-    // verify a password
-    private async verifyPassword(
-        password: string,
-        passwordHash: string,
-    ): Promise<boolean> {
-        return argon2.verify(passwordHash, password);
-    }
 
     /**
      * A real argon2id hash of random bytes, computed once at startup so it always
@@ -610,10 +579,7 @@ export class AuthService {
      * where there is no real hash, so response time never reveals whether an
      * account exists.
      */
-    private readonly dummyPasswordHash: Promise<string> = argon2.hash(
-        randomBytes(32).toString('hex'),
-        PASSWORD_HASH_OPTIONS
-    );
+    private readonly dummyPasswordHash: Promise<string> = hashPassword(randomBytes(32).toString('hex'));
 
      /**
      * Audits a login failure that must NOT advance the lockout counter — either
@@ -645,10 +611,10 @@ export class AuthService {
         password: string,
     ): Promise<void> {
         try {
-            if (!argon2.needsRehash(currentHash, PASSWORD_HASH_COSTS)) {
+            if (!passwordNeedsRehash(currentHash)) {
                 return;
             }
-            const passwordHash = await this.hashPassword(password);
+            const passwordHash = await hashPassword(password);
             // Deliberately NOT touching passwordChangedAt — the user did not
             // change their password, we only re-encoded it.
             await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });

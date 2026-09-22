@@ -16,6 +16,7 @@ const mintArgs = {
     sessionId: 'session-1',
     tokenFamilyId: 'family-1',
     emailVerified: true,
+    mustChangePassword: false,
     authMethod: AuthMethod.PASSWORD,
 };
 

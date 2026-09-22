@@ -269,6 +269,7 @@ describe('AuthService.login', () => {
                 userId: 'user-1',
                 authMethod: AuthMethod.PASSWORD,
                 emailVerified: true,
+                mustChangePassword: false,
                 context,
             });
         });

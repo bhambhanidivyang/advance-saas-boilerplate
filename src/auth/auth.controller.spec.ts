@@ -10,6 +10,7 @@ import { ResendVerification } from './dto/resend-verification.dto';
 import { LoginDto } from './dto/login.dto';
 import { LoginResult } from './interfaces/login.interface';
 import { SessionService } from './providers/session.service';
+import { PasswordService } from './providers/password.service';
 import { IssuedSession } from './interfaces/session.interface';
 import { AuthMethod } from 'src/generated/prisma/client';
 
@@ -61,6 +62,10 @@ describe('AuthController', () => {
         {
           provide: SessionService,
           useValue: sessionService,
+        },
+        {
+          provide: PasswordService,
+          useValue: { changePassword: jest.fn() },
         },
         {
           provide: Logger,
@@ -384,6 +389,7 @@ describe('AuthController', () => {
       sessionId: 'session-1',
       tokenFamilyId: 'family-1',
       emailVerified: true,
+      mustChangePassword: false,
       authMethod: AuthMethod.PASSWORD,
     };
 

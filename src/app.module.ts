@@ -16,6 +16,7 @@ import { EmailModule } from './email/email.module';
 import crypto from 'node:crypto';
 import { JwtModule } from '@nestjs/jwt';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
+import { PasswordChangeRequiredGuard } from './common/guards/password-change-required.guard';
 
 @Module({
   imports: [
@@ -138,6 +139,11 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard
+    },
+    {
+      // After JwtAuthGuard: it reads the user that guard attaches.
+      provide: APP_GUARD,
+      useClass: PasswordChangeRequiredGuard
     }
   ]
 })

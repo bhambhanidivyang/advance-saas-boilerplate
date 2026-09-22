@@ -24,12 +24,13 @@ export class TokenService {
     }
 
     async generateAccessToken(args: MintAccessTokenArgs): Promise<{ accessToken: string; expiresIn: number }> {
-        const { userId, sessionId, tokenFamilyId, emailVerified, authMethod} = args;
+        const { userId, sessionId, tokenFamilyId, emailVerified, mustChangePassword, authMethod} = args;
 
         const accessToken = await this.jwt.signAsync({
             sid: sessionId,
             fam: tokenFamilyId,
             ev: emailVerified,
+            mcp: mustChangePassword,
             amr: [authMethod],
             jti: randomUUID(),
         },

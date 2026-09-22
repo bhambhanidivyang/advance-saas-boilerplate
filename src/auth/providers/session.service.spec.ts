@@ -21,6 +21,7 @@ const args: CreateSessionArgs = {
     userId: 'user-1',
     authMethod: AuthMethod.PASSWORD,
     emailVerified: true,
+    mustChangePassword: false,
     context: {
         ipAddress: '203.0.113.10',
         userAgent: 'jest',
@@ -221,6 +222,7 @@ describe('SessionService.createSession', () => {
                 sessionId: 'session-1',
                 tokenFamilyId: 'family-1',
                 emailVerified: true,
+                mustChangePassword: false,
                 authMethod: AuthMethod.PASSWORD,
             });
         });
@@ -259,6 +261,14 @@ describe('SessionService.createSession', () => {
             }));
         }
 
+        // Two findMany reads happen at the cap: the cap query itself, then
+        // revokeSessions re-reading which of the chosen sessions are still active.
+        function atCap(activeCount: number, stillActive: string[]) {
+            tx.session.findMany
+                .mockResolvedValueOnce(existingSessions(activeCount))
+                .mockResolvedValueOnce(stillActive.map((id) => ({ id })));
+        }
+
         it('counts only sessions that are still usable', async () => {
             await service.createSession(args);
 
@@ -281,12 +291,16 @@ describe('SessionService.createSession', () => {
         });
 
         it('evicts the least recently used session once the cap is reached', async () => {
-            tx.session.findMany.mockResolvedValue(existingSessions(MAX_ACTIVE_PER_USER));
+            atCap(MAX_ACTIVE_PER_USER, ['old-session-1']);
 
             await service.createSession(args);
 
-            expect(tx.session.updateMany).toHaveBeenCalledWith({
+            expect(tx.session.findMany).toHaveBeenNthCalledWith(2, {
                 where: { id: { in: ['old-session-1'] }, revokedAt: null },
+                select: { id: true },
+            });
+            expect(tx.session.updateMany).toHaveBeenCalledWith({
+                where: { id: { in: ['old-session-1'] } },
                 data: { revokedAt: NOW, revocationReason: SessionRevocationReason.SESSION_LIMIT },
             });
             expect(tx.sessionRefreshToken.updateMany).toHaveBeenCalledWith({
@@ -298,7 +312,7 @@ describe('SessionService.createSession', () => {
         // A login must never be refused for being at the cap: the password was right,
         // and a blocked user cannot free a slot because logout needs a session.
         it('still issues the new session after evicting', async () => {
-            tx.session.findMany.mockResolvedValue(existingSessions(MAX_ACTIVE_PER_USER));
+            atCap(MAX_ACTIVE_PER_USER, ['old-session-1']);
 
             const result = await service.createSession(args);
 
@@ -313,11 +327,11 @@ describe('SessionService.createSession', () => {
                 refresh: REFRESH_TTL_SECONDS,
                 maxActive: 10,
             });
-            tx.session.findMany.mockResolvedValue(existingSessions(12));
+            atCap(12, ['old-session-1', 'old-session-2', 'old-session-3']);
 
             await service.createSession(args);
 
-            expect(tx.session.updateMany.mock.calls[0][0].where.id.in).toEqual([
+            expect(tx.session.findMany.mock.calls[1][0].where.id.in).toEqual([
                 'old-session-1',
                 'old-session-2',
                 'old-session-3',
@@ -327,8 +341,8 @@ describe('SessionService.createSession', () => {
         // Evicted sessions keep a usable access token for up to its TTL unless the
         // denylist is told about them, so this is the assertion that makes eviction
         // actually take effect rather than only being recorded.
-        it('denylists the evicted sessions after the transaction commits', async () => {
-            tx.session.findMany.mockResolvedValue(existingSessions(MAX_ACTIVE_PER_USER));
+        it('denylists the evicted sessions', async () => {
+            atCap(MAX_ACTIVE_PER_USER, ['old-session-1']);
 
             await service.createSession(args);
 
@@ -340,11 +354,27 @@ describe('SessionService.createSession', () => {
 
             await service.createSession(args);
 
-            expect(denylist.revoke).toHaveBeenCalledWith([]);
+            expect(denylist.revoke).not.toHaveBeenCalled();
+        });
+
+        // Eviction runs before the new session is written. If that later write fails,
+        // the whole login rolls back and the evicted sessions were never revoked — so
+        // denylisting them would lock the user out of sessions that are still live.
+        // This is the test that pins revokeSessions to afterCommit rather than an
+        // inline denylist call.
+        it('does not denylist the evicted sessions when the login rolls back', async () => {
+            atCap(MAX_ACTIVE_PER_USER, ['old-session-1']);
+            tx.session.create.mockRejectedValue(new Error('db down'));
+
+            await expect(service.createSession(args)).rejects.toThrow('db down');
+
+            // Proves eviction really ran, so the assertion below is not vacuous.
+            expect(tx.session.updateMany).toHaveBeenCalled();
+            expect(denylist.revoke).not.toHaveBeenCalled();
         });
 
         it('records one SESSION_REVOKED event naming the evicted sessions', async () => {
-            tx.session.findMany.mockResolvedValue(existingSessions(MAX_ACTIVE_PER_USER));
+            atCap(MAX_ACTIVE_PER_USER, ['old-session-1']);
 
             await service.createSession(args);
 
