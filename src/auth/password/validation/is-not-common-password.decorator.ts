@@ -1,6 +1,5 @@
-import { ConfigService } from "@nestjs/config";
 import { registerDecorator, ValidationArguments, ValidationOptions, ValidatorConstraint, ValidatorConstraintInterface } from "class-validator";
-import { isCommonPassword } from "src/auth/utils/common-passwords.utils";
+import { isCommonPassword } from "src/auth/password/validation/common-passwords.utils";
 
 @ValidatorConstraint({ name: 'isNotCommonPassword', async: false })
 export class IsNotCommonPasswordConstraint implements ValidatorConstraintInterface {

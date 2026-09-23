@@ -1,4 +1,4 @@
-import { AuthContext } from './auth-context.interface';
+import { AuthContext } from "../interfaces/auth-context.interface";
 
 export interface ChangePasswordArgs {
     userId: string;
@@ -19,4 +19,9 @@ export interface ChangePasswordResult {
 export interface ChangePasswordResponse {
     success: true;
     revokedSessions: number;
+}
+
+export interface PasswordCredentials {
+    email: string;
+    password: string;
 }

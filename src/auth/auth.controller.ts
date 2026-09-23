@@ -1,7 +1,7 @@
 import { Body, Controller, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { CreateNewUser } from './dto/create-new-user.dto';
-import { AuthService } from './providers/auth.service';
+import { AuthService } from './auth.service';
 import { ResendVerification } from './dto/resend-verification.dto';
 import { LoginDto } from './dto/login.dto';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -13,12 +13,12 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { AllowPasswordChangePending } from 'src/common/decorators/allow-password-change-pending.decorator';
 import type { AuthenticatedUser } from './interfaces/authenticated-request.interface';
 import { ConfigService } from '@nestjs/config';
-import { buildCookieOptionsFromConfig } from './utils/session-cookie.util';
-import { SessionService } from './providers/session.service';
+import { buildCookieOptionsFromConfig } from './session/session-cookie.util';
+import { SessionService } from './session/session.service';
 import { GENERIC_REFRESH_FAILURE } from './constants/auth.constants';
 import { ChangePasswordDto } from './dto/change-password.dto';
-import { ChangePasswordResponse } from './interfaces/password.interface';
-import { PasswordService } from './providers/password.service';
+import { ChangePasswordResponse } from './password/password.interface';
+import { PasswordService } from './password/password.service';
 
 export interface VerifyEmailParams {
     tokenId?: string;

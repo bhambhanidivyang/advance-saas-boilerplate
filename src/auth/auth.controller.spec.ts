@@ -4,13 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { Logger } from 'nestjs-pino';
 import type { Request, Response } from 'express';
 import { AuthController } from './auth.controller';
-import { AuthService } from './providers/auth.service';
+import { AuthService } from './auth.service';
 import { CreateNewUser } from './dto/create-new-user.dto';
 import { ResendVerification } from './dto/resend-verification.dto';
 import { LoginDto } from './dto/login.dto';
 import { LoginResult } from './interfaces/login.interface';
-import { SessionService } from './providers/session.service';
-import { PasswordService } from './providers/password.service';
+import { SessionService } from './session/session.service';
+import { PasswordService } from './password/password.service';
 import { IssuedSession } from './interfaces/session.interface';
 import { AuthMethod } from 'src/generated/prisma/client';
 

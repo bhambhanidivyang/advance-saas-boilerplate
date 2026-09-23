@@ -8,9 +8,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthEventType, SessionRevocationReason, UserStatus } from 'src/generated/prisma/client';
 import { logAuditEvent } from 'src/common/audit/log-auth-event';
 import { runUnitOfWork } from 'src/common/prisma/unit-of-work';
-import { SessionService } from './session.service';
-import { hashPassword, verifyPassword } from '../utils/password-hash.util';
-import { ChangePasswordArgs, ChangePasswordResult } from '../interfaces/password.interface';
+import { SessionService } from '../session/session.service';
+import { hashPassword, verifyPassword } from './password-hash.util';
+import { ChangePasswordArgs, ChangePasswordResult } from './password.interface';
+import { CLEARED_LOCKOUT_STATE } from './password-lockout.constants';
 
 /**
  * The password credential lifecycle: changing it now, resetting it next.
@@ -104,8 +105,7 @@ export class PasswordService {
                     passwordHash: newPasswordHash,
                     passwordChangedAt: now,
                     mustChangePassword: false,
-                    passwordFailedAttempts: 0,
-                    passwordLockedUntil: null,
+                    ...CLEARED_LOCKOUT_STATE,
                 },
             });
 

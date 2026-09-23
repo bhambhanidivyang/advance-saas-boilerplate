@@ -17,13 +17,14 @@ import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { installTransactionOverlapBarrier } from 'src/common/testing/transaction-overlap-barrier';
 import { EmailService } from 'src/email/email.service';
-import { SessionService } from './session.service';
+import { SessionService } from './session/session.service';
+import { PasswordAuthenticatorService } from './password/password-authenticator.service';
 import {
   AuthEventType,
   Prisma,
   UserTokenType,
 } from 'src/generated/prisma/client';
-import { GENERIC_VERIFICATION_RESPONSE } from '../constants/auth.constants';
+import { GENERIC_VERIFICATION_RESPONSE } from './constants/auth.constants';
 import { EmailJobType } from 'src/email/interfaces/email-job.interface';
 
 const COOLDOWN_SECONDS = 60;
@@ -113,6 +114,8 @@ describe('AuthService concurrency (PostgreSQL)', () => {
         // These tests exercise register/resend/verify only; login is covered by
         // the unit specs and the rotation integration spec.
         { provide: SessionService, useValue: { createSession: jest.fn() } },
+        // Login is covered in auth.service.login.spec.ts; these specs never reach it.
+        { provide: PasswordAuthenticatorService, useValue: {} },
         {
           provide: ConfigService,
           useValue: {

@@ -1,16 +1,17 @@
 import { Module } from '@nestjs/common';
 import { AuthController } from './auth.controller';
-import { AuthService } from './providers/auth.service';
+import { AuthService } from './auth.service';
 import { EmailModule } from 'src/email/email.module';
-import { TokenService } from './providers/token.service';
-import { SessionService } from './providers/session.service';
-import { SessionDenylistService } from './providers/session-denylist.service';
-import { PasswordService } from './providers/password.service';
+import { TokenService } from './session/token.service';
+import { SessionService } from './session/session.service';
+import { SessionDenylistService } from './session/session-denylist.service';
+import { PasswordService } from './password/password.service';
+import { PasswordAuthenticatorService } from './password/password-authenticator.service';
 
 @Module({
   imports: [EmailModule],
   controllers: [AuthController],
-  providers: [AuthService, TokenService, SessionService, SessionDenylistService, PasswordService],
+  providers: [AuthService, TokenService, SessionService, SessionDenylistService, PasswordService, PasswordAuthenticatorService],
   exports: [TokenService, SessionService, SessionDenylistService]
 })
 export class AuthModule {}

@@ -2,13 +2,13 @@ import { BadRequestException, ForbiddenException, UnauthorizedException } from '
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthEventType, SessionRevocationReason, UserStatus } from 'src/generated/prisma/client';
 import { PasswordService } from './password.service';
-import { SessionService } from './session.service';
-import { hashPassword, verifyPassword } from '../utils/password-hash.util';
-import { ChangePasswordArgs } from '../interfaces/password.interface';
+import { SessionService } from '../session/session.service';
+import { hashPassword, verifyPassword } from './password-hash.util';
+import { ChangePasswordArgs } from './password.interface';
 
 // Mocked at the util rather than at argon2, so these tests never pay for real
 // hashing and can drive the verify outcome directly.
-jest.mock('../utils/password-hash.util', () => ({
+jest.mock('./password-hash.util', () => ({
     hashPassword: jest.fn(),
     verifyPassword: jest.fn(),
 }));

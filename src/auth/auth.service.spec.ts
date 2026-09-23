@@ -5,8 +5,9 @@ import { AuthService } from './auth.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EmailService } from 'src/email/email.service';
 import { Prisma } from 'src/generated/prisma/client';
-import { GENERIC_VERIFICATION_RESPONSE } from '../constants/auth.constants';
-import { SessionService } from './session.service';
+import { GENERIC_VERIFICATION_RESPONSE } from './constants/auth.constants';
+import { SessionService } from './session/session.service';
+import { PasswordAuthenticatorService } from './password/password-authenticator.service';
 
 const COOLDOWN_SECONDS = 60;
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
@@ -64,6 +65,8 @@ describe('AuthService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: EmailService, useValue: emailService },
         { provide: SessionService, useValue: { createSession: jest.fn() } },
+        // Login is covered in auth.service.login.spec.ts; these specs never reach it.
+        { provide: PasswordAuthenticatorService, useValue: {} },
         {
           provide: ConfigService,
           useValue: {

@@ -3,14 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { UnauthorizedException } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 import * as argon2 from 'argon2';
-import { AuthService } from './auth.service';
+import { PasswordAuthenticatorService } from './password-authenticator.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { EmailService } from 'src/email/email.service';
 import { AuthMethod } from 'src/generated/prisma/client';
 import { GENERIC_LOGIN_RESPONSE, LOGIN_FAILURE_REASON } from '../constants/auth.constants';
 import { AuthContext } from '../interfaces/auth-context.interface';
-import { IssuedSession } from '../interfaces/session.interface';
-import { SessionService } from './session.service';
 
 jest.mock('argon2', () => ({
     argon2id: 2,
@@ -26,20 +23,11 @@ const needsRehashMock = argon2.needsRehash as jest.Mock;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_SECONDS = 3600;
 
-const body = { email: 'User@Example.com', password: 'CorrectPassword1!' };
+const credentials = { email: 'User@Example.com', password: 'CorrectPassword1!' };
 const context: AuthContext = {
     ipAddress: '203.0.113.10',
     userAgent: 'jest',
     deviceId: 'device-1',
-};
-
-const issuedSession: IssuedSession = {
-    sessionId: 'session-1',
-    tokenFamilyId: 'family-1',
-    accessToken: 'access-token',
-    expiresIn: 600,
-    refreshToken: 'raw-refresh-token',
-    refreshTokenExpiresAt: new Date('2026-01-15T00:00:00.000Z'),
 };
 
 function userRecord(overrides: Record<string, unknown> = {}) {
@@ -58,8 +46,18 @@ function userRecord(overrides: Record<string, unknown> = {}) {
     };
 }
 
-describe('AuthService.login', () => {
-    let service: AuthService;
+/** Records every top-level property read, so a test can prove what was never touched. */
+function tracked<T extends object>(target: T, accessed: Set<string>): T {
+    return new Proxy(target, {
+        get(obj, key, receiver) {
+            accessed.add(String(key));
+            return Reflect.get(obj, key, receiver);
+        },
+    });
+}
+
+describe('PasswordAuthenticatorService', () => {
+    let authenticator: PasswordAuthenticatorService;
     let prisma: {
         userEmail: { findUnique: jest.Mock };
         user: { update: jest.Mock };
@@ -67,19 +65,21 @@ describe('AuthService.login', () => {
         $transaction: jest.Mock;
     };
     let tx: { user: { update: jest.Mock }; authEvent: { create: jest.Mock } };
-    let sessionService: { createSession: jest.Mock };
+    let accessed: Set<string>;
 
     beforeEach(async () => {
         jest.clearAllMocks();
         hashMock.mockResolvedValue('$argon2id$dummy-hash');
         needsRehashMock.mockReturnValue(false);
+        accessed = new Set();
 
-        sessionService = { createSession: jest.fn().mockResolvedValue(issuedSession) };
-
-        tx = {
-            user: { update: jest.fn().mockResolvedValue({ passwordFailedAttempts: 1 }) },
-            authEvent: { create: jest.fn() },
-        };
+        tx = tracked(
+            {
+                user: { update: jest.fn().mockResolvedValue({ passwordFailedAttempts: 1 }) },
+                authEvent: { create: jest.fn() },
+            },
+            accessed,
+        );
 
         prisma = {
             userEmail: { findUnique: jest.fn() },
@@ -90,14 +90,11 @@ describe('AuthService.login', () => {
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
-                AuthService,
-                { provide: PrismaService, useValue: prisma },
-                { provide: EmailService, useValue: { enqueue: jest.fn() } },
-                { provide: SessionService, useValue: sessionService },
+                PasswordAuthenticatorService,
+                { provide: PrismaService, useValue: tracked(prisma, accessed) },
                 {
                     provide: ConfigService,
                     useValue: {
-                        get: jest.fn(() => 24),
                         getOrThrow: jest.fn((key: string) => {
                             if (key === 'auth.passwordMaxFailedAttempts') return MAX_FAILED_ATTEMPTS;
                             if (key === 'auth.passwordLockDurationSeconds') return LOCK_DURATION_SECONDS;
@@ -109,18 +106,18 @@ describe('AuthService.login', () => {
             ],
         }).compile();
 
-        service = module.get<AuthService>(AuthService);
+        authenticator = module.get(PasswordAuthenticatorService);
     });
 
     describe('enumeration resistance', () => {
         it('returns an identical failure for an unknown email and a wrong password', async () => {
             prisma.userEmail.findUnique.mockResolvedValue(null);
             verifyMock.mockResolvedValue(false);
-            const unknown = await service.login(body, context).catch((e) => e);
+            const unknown = await authenticator.authenticate(credentials, context).catch((e) => e);
 
             prisma.userEmail.findUnique.mockResolvedValue(userRecord());
             verifyMock.mockResolvedValue(false);
-            const wrongPassword = await service.login(body, context).catch((e) => e);
+            const wrongPassword = await authenticator.authenticate(credentials, context).catch((e) => e);
 
             expect(unknown).toBeInstanceOf(UnauthorizedException);
             expect(wrongPassword).toBeInstanceOf(UnauthorizedException);
@@ -140,7 +137,7 @@ describe('AuthService.login', () => {
             prisma.userEmail.findUnique.mockResolvedValue(record);
             verifyMock.mockResolvedValue(matches);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
             expect(verifyMock).toHaveBeenCalledTimes(1);
         });
@@ -149,16 +146,16 @@ describe('AuthService.login', () => {
             prisma.userEmail.findUnique.mockResolvedValue(null);
             verifyMock.mockResolvedValue(false);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
-            expect(verifyMock).toHaveBeenCalledWith('$argon2id$dummy-hash', body.password);
+            expect(verifyMock).toHaveBeenCalledWith('$argon2id$dummy-hash', credentials.password);
         });
 
         it('normalizes the email before lookup', async () => {
             prisma.userEmail.findUnique.mockResolvedValue(null);
             verifyMock.mockResolvedValue(false);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
             expect(prisma.userEmail.findUnique).toHaveBeenCalledWith(
                 expect.objectContaining({ where: expect.objectContaining({ email: 'user@example.com' }) }),
@@ -173,7 +170,7 @@ describe('AuthService.login', () => {
             );
             verifyMock.mockResolvedValue(false);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
             expect(prisma.user.update).toHaveBeenCalledWith({
                 where: { id: 'user-1' },
@@ -189,7 +186,9 @@ describe('AuthService.login', () => {
             );
             verifyMock.mockResolvedValue(true);
 
-            await expect(service.login(body, context)).rejects.toBeInstanceOf(UnauthorizedException);
+            await expect(authenticator.authenticate(credentials, context)).rejects.toBeInstanceOf(
+                UnauthorizedException,
+            );
 
             expect(prisma.$transaction).not.toHaveBeenCalled();
             expect(prisma.authEvent.create).toHaveBeenCalledWith(
@@ -205,7 +204,7 @@ describe('AuthService.login', () => {
             prisma.userEmail.findUnique.mockResolvedValue(null);
             verifyMock.mockResolvedValue(false);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
             expect(prisma.authEvent.create).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -222,7 +221,7 @@ describe('AuthService.login', () => {
             prisma.userEmail.findUnique.mockResolvedValue(userRecord({ passwordHash: null }));
             verifyMock.mockResolvedValue(false);
 
-            await service.login(body, context).catch(() => undefined);
+            await authenticator.authenticate(credentials, context).catch(() => undefined);
 
             expect(prisma.authEvent.create).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -238,19 +237,17 @@ describe('AuthService.login', () => {
     });
 
     describe('success', () => {
-        it('resets the failure state and returns the issued session and user', async () => {
+        it('resets the failure state and returns an AuthenticationResult', async () => {
             prisma.userEmail.findUnique.mockResolvedValue(userRecord());
             verifyMock.mockResolvedValue(true);
 
-            const result = await service.login(body, context);
+            const result = await authenticator.authenticate(credentials, context);
 
             expect(result).toEqual({
-                session: issuedSession,
-                user: {
-                    id: 'user-1',
-                    emailVerified: true,
-                    mustChangePassword: false,
-                },
+                userId: 'user-1',
+                authMethod: AuthMethod.PASSWORD,
+                emailVerified: true,
+                mustChangePassword: false,
             });
             expect(prisma.user.update).toHaveBeenCalledWith({
                 where: { id: 'user-1' },
@@ -258,38 +255,33 @@ describe('AuthService.login', () => {
             });
         });
 
-        it('creates exactly one session for the authenticated user', async () => {
-            prisma.userEmail.findUnique.mockResolvedValue(userRecord());
+        it('reports an unverified email instead of blocking', async () => {
+            prisma.userEmail.findUnique.mockResolvedValue({ ...userRecord(), isVerified: false });
             verifyMock.mockResolvedValue(true);
 
-            await service.login(body, context);
-
-            expect(sessionService.createSession).toHaveBeenCalledTimes(1);
-            expect(sessionService.createSession).toHaveBeenCalledWith({
-                userId: 'user-1',
-                authMethod: AuthMethod.PASSWORD,
-                emailVerified: true,
-                mustChangePassword: false,
-                context,
+            await expect(authenticator.authenticate(credentials, context)).resolves.toMatchObject({
+                emailVerified: false,
             });
-        });
-
-        it('does not leak the request context back to the caller', async () => {
-            prisma.userEmail.findUnique.mockResolvedValue(userRecord());
-            verifyMock.mockResolvedValue(true);
-
-            const result = await service.login(body, context);
-
-            expect(result).not.toHaveProperty('context');
         });
 
         it('surfaces mustChangePassword instead of blocking', async () => {
             prisma.userEmail.findUnique.mockResolvedValue(userRecord({ mustChangePassword: true }));
             verifyMock.mockResolvedValue(true);
 
-            await expect(service.login(body, context)).resolves.toMatchObject({
-                user: { mustChangePassword: true },
+            await expect(authenticator.authenticate(credentials, context)).resolves.toMatchObject({
+                mustChangePassword: true,
             });
+        });
+
+        // Authenticators prove identity; SessionService alone issues sessions.
+        it('never touches sessions or refresh tokens', async () => {
+            prisma.userEmail.findUnique.mockResolvedValue(userRecord());
+            verifyMock.mockResolvedValue(true);
+
+            await authenticator.authenticate(credentials, context);
+
+            expect(accessed.has('session')).toBe(false);
+            expect(accessed.has('sessionRefreshToken')).toBe(false);
         });
 
         it('upgrades a stale password hash without touching passwordChangedAt', async () => {
@@ -298,7 +290,7 @@ describe('AuthService.login', () => {
             needsRehashMock.mockReturnValue(true);
             hashMock.mockResolvedValue('$argon2id$upgraded');
 
-            await service.login(body, context);
+            await authenticator.authenticate(credentials, context);
 
             const upgrade = prisma.user.update.mock.calls.find(
                 ([arg]) => arg.data.passwordHash !== undefined,
@@ -307,15 +299,15 @@ describe('AuthService.login', () => {
             expect(upgrade[0].data).not.toHaveProperty('passwordChangedAt');
         });
 
-        it('still logs the user in when the rehash upgrade fails', async () => {
+        it('still authenticates when the rehash upgrade fails', async () => {
             prisma.userEmail.findUnique.mockResolvedValue(userRecord());
             verifyMock.mockResolvedValue(true);
             needsRehashMock.mockReturnValue(true);
             hashMock.mockRejectedValueOnce(new Error('argon2 exploded'));
 
-            await expect(service.login(body, context)).resolves.toMatchObject({
-                session: issuedSession,
-                user: { id: 'user-1' },
+            await expect(authenticator.authenticate(credentials, context)).resolves.toMatchObject({
+                userId: 'user-1',
+                authMethod: AuthMethod.PASSWORD,
             });
         });
     });

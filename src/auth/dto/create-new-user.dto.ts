@@ -1,5 +1,5 @@
 import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, IsOptional } from "class-validator";
-import { MeetsPasswordPolicy } from "src/common/decorators/meets-password-policy.decorator";
+import { MeetsPasswordPolicy } from "src/auth/password/validation/meets-password-policy.decorator";
 import { Transform } from "class-transformer";
 
 export class CreateNewUser {
