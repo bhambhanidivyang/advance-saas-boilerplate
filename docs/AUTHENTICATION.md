@@ -2,24 +2,27 @@
 
 This document describes the authentication and session system in this repository: how each flow works, the patterns behind it, what it defends against, and the practices that back it. It is written to be read closely — **controls that are partial or absent are marked as such**, so nothing here falls apart under review.
 
-Stack: NestJS 11, Prisma 7 + PostgreSQL, Redis (rate limiting, email queue, optional denylist), argon2id, HS256 JWT.
+Stack: NestJS 11, Prisma 7 + PostgreSQL, Redis (rate limiting, email queue, optional denylist), argon2id, HS256 JWT, Google ID tokens.
+
+Two companion documents go deeper: [SECURITY.md](SECURITY.md) for the threat register, and [GOOGLE-AUTH.md](GOOGLE-AUTH.md) for how Google sign-in was built step by step.
 
 | | |
 |------|------|
-| HTTP endpoints | 9 |
-| Unit tests | 233 across 23 suites |
-| Integration tests | 9 against real PostgreSQL |
-| End-to-end journeys | 16 |
-| Spec files | 25 |
-| Audit event types written | 9 |
-| Validated environment rules | 58 |
-| Migrations | 4 |
+| HTTP endpoints | 11 |
+| Sign-in methods | 2 (password, Google) |
+| Unit tests | 323 across 29 suites |
+| Integration tests | 22 against real PostgreSQL |
+| End-to-end journeys | 31 |
+| Spec files | 33 |
+| Audit event types written | 10 |
+| Validated environment rules | 61 |
+| Migrations | 6 |
 
 ---
 
 ## 1. How authentication works
 
-Six flows are implemented end to end.
+Seven flows are implemented end to end, through two sign-in methods that meet at one place.
 
 ### Registration and email verification
 
@@ -93,6 +96,24 @@ flowchart TD
 
 Single use is guaranteed by the **conditional update**, not by the isolation level. The transaction *returns* an outcome rather than throwing, because the rejection paths write the expiry sweep and the family revocation — a throw would roll those back and leave a stolen token working.
 
+### Google sign-in
+
+The second sign-in method, and the test of whether the architecture holds: it added no session, cookie or token code of its own.
+
+The frontend obtains a signed ID token from Google and posts it to `/auth/google`. We chose this over the redirect flow because all we need from Google is proof of identity — the redirect flow exists to obtain access tokens for calling Google APIs, needs a client secret, and has to hand a session back to a single-page app through a redirect.
+
+1. **Verify the token.** Signature against Google's published keys, issuer, expiry, and — the check that matters most — **`aud` must equal one of our client IDs**. Without it, a token Google issued to an attacker's own application would be accepted here.
+2. **Consume the nonce**, when the token carries one. Single-use, so a stolen token cannot be replayed within its hour of validity.
+3. **Resolve the identity**, by Google's permanent `sub`, never by email:
+   - Known identity → sign in.
+   - Unknown, and the email is verified by Google → create an account, or link to an existing one whose email is also verified.
+   - Unknown, and the existing account's email was **never** verified → the pre-account-hijacking case: link, verify the email, **remove the password**, revoke every session, and expire pending verification tokens, in one transaction.
+4. **Complete sign-in** through the same `completeSignIn` password login uses, so a Google session refreshes, logs out and revokes identically.
+
+Google sign-in never sets `mustChangePassword` (an account with no password could never clear it) and is never blocked by a password lockout (that counter is about password guessing).
+
+Whether the deployment offers Google at all is an **application capability**, held in configuration. With it off, the route answers 404.
+
 ### Logout and change password
 
 Logout is credentialed by the **refresh cookie**, not a Bearer token: the access token has usually expired by the time someone clicks it, and requiring one would answer a logout with a 401. It is idempotent — a second call writes nothing and still succeeds. Logout-all is Bearer-guarded, being account-wide, and records **one** event carrying a count rather than one per session.
@@ -111,7 +132,11 @@ Change password **re-authenticates**: a valid access token proves possession of 
 
 **Convergence on one authentication result** — *implemented*. Password authentication produces a normalised `AuthenticationResult` handed to session creation. Providers never mint sessions or tokens themselves, so Google, magic link and passkey authentication can be added without touching session handling.
 
-**Application capability vs organisation policy** — *designed, not built*. Two distinct layers: what the deployment can offer at all (capability, configuration) and what a given organisation allows or requires (policy, per-tenant). Available authentication is the intersection. Deliberately deferred — a login request must not query an organisation before organisation context is known.
+**External identity resolution** — *implemented*, `identity/identity.service.ts`. Provider-agnostic: it receives an `ExternalIdentityProfile` and never learns what Google calls its claims, so a second provider needs no changes there. Translating one provider's vocabulary into ours is the verifier's job alone.
+
+**Test seams** — *implemented*, `GoogleTokenVerifier`. Real Google ID tokens cannot be obtained in a test run, so the one class that talks to Google is its own injectable. The e2e suite replaces it with `.overrideProvider()` and exercises everything else — guards, validation, identity resolution, sessions, cookies, database — for real.
+
+**Application capability vs organisation policy** — *partly implemented*. Google sign-in is the first capability: a configuration flag decides whether the deployment offers it at all, checked in the authenticator so every caller is covered. Organisation-level policy remains designed, not built. Two distinct layers: what the deployment can offer at all (capability, configuration) and what a given organisation allows or requires (policy, per-tenant). Available authentication is the intersection. Deliberately deferred — a login request must not query an organisation before organisation context is known.
 
 **Multi-organisation membership** — *schema ready*. A user may belong to many organisations with conflicting policies, so **authentication authenticates the user, never an organisation**. Tables for organisations, memberships, roles, permissions and invitations exist; organisation context resolution is an explicit open design question rather than an implicit "email implies organisation" rule.
 
@@ -190,7 +215,7 @@ Each is a known, documented trade-off rather than an oversight.
 
 ## 4. Enterprise practices
 
-- **Layered test strategy** — 233 unit tests for logic and branch coverage; 9 integration tests against real PostgreSQL for anything depending on genuine transaction semantics; 16 end-to-end journeys through the deployed configuration.
+- **Layered test strategy** — 323 unit tests for logic and branch coverage; 22 integration tests against real PostgreSQL for anything depending on genuine transaction semantics; 31 end-to-end journeys through the deployed configuration.
 - **Tests verified to fail** — critical guarantees are checked by deliberately reintroducing the bug and confirming the right test goes red. This has caught coverage gaps a green suite hid, including one where the after-commit rule was protected by nothing at all.
 - **Real concurrency, not mocked** — a transaction overlap barrier holds simultaneous transactions until all have arrived, then releases them together, reproducing races against a real MVCC engine.
 - **Shared bootstrap** — `configureApp()` is applied by both `main.ts` and the e2e harness, so tests exercise the deployed configuration rather than a bare `AppModule` with no validation pipe or cookie parser.
@@ -206,13 +231,13 @@ Each is a known, documented trade-off rather than an oversight.
 
 ## Honest scope
 
-**Runs today:** registration, email verification and resend, password login, sessions, access and refresh tokens, rotation with reuse detection, logout and logout-all, session capping, change password, optional access-token denylist.
+**Runs today:** registration, email verification and resend, password login, **Google sign-in with account linking and nonce replay protection**, sessions, access and refresh tokens, rotation with reuse detection, logout and logout-all, session capping, change password, optional access-token denylist, and a scheduled cleanup job for expired tokens and nonces.
 
-**Schema ready, not implemented:** organisations, memberships, roles and permissions, invitations, OTP challenges, external auth identities, plans and feature flags.
+**Schema ready, not implemented:** organisations, memberships, roles and permissions, invitations, OTP challenges, plans and feature flags, and `OAuthState` reserved for a future OIDC redirect flow.
 
 **Designed, not built:** organisation authentication policy and the capability/policy intersection; organisation context resolution for multi-organisation users.
 
-**Next:** password reset → organisations and membership → role-based authorisation → auth policy → multi-factor.
+**Next:** frontend (which also completes Google nonce binding) → password reset → organisations and membership → role-based authorisation → auth policy → multi-factor.
 
 ---
 
@@ -222,5 +247,6 @@ Each is a known, documented trade-off rather than an oversight.
 - **Check the two session lifetimes are the right way round** (`SESSION_ABSOLUTE_TTL_SECONDS` must be ≥ `SESSION_REFRESH_TTL_SECONDS`) and add the cross-field Joi rule that enforces it. They are currently swapped in `.env`; the runtime clamp keeps behaviour correct, so nothing fails loudly.
 - Set proxy trust to the number of proxies actually in front of the service.
 - Decide on the access-token denylist: enable it, or accept the documented revocation window.
-- Add a cleanup job for expired refresh tokens — the supporting index is already in place.
+- Turn on `AUTH_GOOGLE_NONCE_REQUIRED` once the frontend passes a nonce to Google. Startup validation already refuses to run without it in production.
+- Replace the development Google OAuth client with a production one, without the OAuth Playground redirect URI.
 - Add double-submit CSRF tokens if the frontend is served from a different site.

@@ -44,12 +44,13 @@ For how the flows work end to end, see [AUTHENTICATION.md](AUTHENTICATION.md).
 
 **Attack:** the attacker registers a password account with the victim's email and never verifies it. Later the victim signs in with Google, the system links Google to that account because the emails match, and the attacker's password still works. Both people now share the account.
 
-**Defence (planned for the Google phase):**
-- Link a Google identity to an existing account automatically only when Google reports `email_verified` **and** the existing account's email is verified.
-- When linking to an account whose email was never verified, remove its password and revoke all its sessions in the same transaction as the link.
+**Defence:** `IdentityService` resolves a Google identity by the provider's permanent `sub`, never by email, and only uses an email Google reports as verified. When it links to an account whose own email was **never** verified, one transaction does all of: link the identity, mark the email verified (Google has just proved ownership), remove the password, revoke every session with reason `SECURITY`, and expire pending verification tokens. The squatter's password and sessions are gone; the real owner can set a password through reset.
 
-**Today:** there is only one sign-in method, so this attack cannot happen yet. Registering with an email that already exists cannot take over the existing account.
-**Status:** Planned.
+Linking happens automatically only when both sides confirmed the address. Every link writes an `IDENTITY_LINKED` event recording `newUser`, `emailWasUnverified`, `passwordRemoved` and `revokedSessions`, so an incident responder can see exactly what was done.
+
+**Where:** `auth/identity/identity.service.ts`
+**Status:** Enforced.
+**Tested by:** unit tests per branch, real-Postgres tests of the whole transaction, and an end-to-end journey: register with a password, sign in, then sign in with Google on the same address — the password then returns 401 and its session can no longer refresh.
 
 ### Deleted or suspended accounts signing in
 
@@ -101,6 +102,15 @@ The policy applies only when a password is **set**, never when it is checked. En
 **Where:** `common/decorators/meets-password-policy.decorator.ts`, `is-not-breached.decorator.ts`, `is-not-common-password.decorator.ts`
 **Status:** Enforced. **Tested by:** the e2e policy rejection journey.
 
+### Account takeover by token substitution
+
+**Attack:** an attacker runs their own application, gets the victim to sign in there with Google, and replays that ID token to us. If we only checked the signature, the token would look perfectly valid — it *is* a genuine Google token for that person, just issued to somebody else's app. This is the confused-deputy problem.
+
+**Defence:** `verifyIdToken` is always given our configured client IDs as `audience`, so a token whose `aud` is another application is refused. Identity is taken from `sub`, never from the email, so a changed or reassigned Google address cannot redirect a sign-in to another account.
+
+**Where:** `auth/google/google-token-verifier.ts`
+**Status:** Enforced. **Tested by:** a unit test that pins the `audience` argument; removing the option makes it fail.
+
 ### Offline cracking of stolen hashes
 
 **Attack:** after a database leak, the attacker guesses passwords offline against the hashes.
@@ -121,6 +131,18 @@ The policy applies only when a password is **set**, never when it is checked. En
 ---
 
 ## 3. Token and session attacks
+
+### Replay of a Google ID token
+
+**Attack:** a Google ID token is a bearer credential, valid for about an hour. If one leaks — through request logs, frontend error reporting, a third-party script on the sign-in page, or a proxy — an attacker replays it and receives a full session for that account.
+
+**Defence:** each sign-in is bound to a single-use nonce. `POST /auth/google/nonce` issues 32 random bytes and stores only their SHA-256 with a five-minute expiry. The client passes it to Google, which puts it in the signed token, and we claim it with a conditional update that matches only unused, unexpired rows. A replay finds the nonce already spent. A nonce that is present is always verified, so stripping the claim does not bypass the check.
+
+The Google ID token and the nonce are also removed from request logs by the redaction list.
+
+**Where:** `auth/google/google-nonce.service.ts`, `google-authenticator.service.ts`
+**Status:** **Partial.** The server half is enforced and tested. `AUTH_GOOGLE_NONCE_REQUIRED` stays off until a frontend sends the nonce, so a token without one is currently accepted; startup validation makes it mandatory in production.
+**Tested by:** unit, real-Postgres concurrency, and an end-to-end replay of one token.
 
 ### Replay of a refresh token
 
@@ -286,6 +308,17 @@ The policy applies only when a password is **set**, never when it is checked. En
 
 **Status:** Enforced.
 
+### Unbounded growth of expired credentials
+
+**Attack:** not an attack so much as a slow failure. Expired refresh tokens, verification tokens and sign-in nonces accumulate until the tables dominate the database.
+
+**Defence:** a BullMQ repeatable job deletes rows past their retention: refresh tokens 30 days after expiry, user tokens 7 days, nonces 1 day. Deletes run in bounded batches (1000 rows per statement, 50 per run) so no statement holds locks for long and a backlog is worked down over several runs. Each run logs its counts.
+
+**The rule it follows: delete on expiry, never on use.** Reuse detection recognises a replayed refresh token by finding its used row; removing rows because they were used would turn theft into an ordinary 401 with no family revocation and no alert. Sessions are deliberately never deleted, because `AuthEvent.sessionId` is `onDelete: SetNull` and removing them would strip session ids from historical audit rows.
+
+**Where:** `maintenance/cleanup.service.ts`
+**Status:** Enforced. **Tested by:** 11 unit tests, including mutation checks that deleting by `usedAt` or ignoring retention fails.
+
 ### Email bombing and duplicate emails
 
 **Attack:** using the resend endpoint to flood someone's inbox. A related failure: a queue retry sending the same email twice.
@@ -310,7 +343,7 @@ The policy applies only when a password is **set**, never when it is checked. En
 
 **Attack:** reading credentials from log storage.
 
-**Defence:** the structured logger removes 15 fields: the authorization and cookie headers, passwords, raw tokens, access and refresh tokens, hashes, API keys and client secrets.
+**Defence:** the structured logger removes 17 fields: the authorization and cookie headers, passwords, raw tokens, access and refresh tokens, hashes, API keys, client secrets, and the Google ID token and nonce.
 
 **Status:** **Partial.** See the query-string gap below.
 
@@ -326,6 +359,7 @@ The policy applies only when a password is **set**, never when it is checked. En
 - **A side effect only runs after its transaction commits.** Redis writes are queued with `afterCommit`, so a rollback can't leave a revocation that never happened.
 - **Clean input at the boundary.** Client-supplied values are validated once, where the request context is built.
 - **Ask for the password again before changing credentials.** A valid token proves the client holds a credential, not that the user is present right now.
+- **Test seams instead of mocked stacks.** The one class that talks to Google is its own injectable, so end-to-end tests replace it alone and run guards, validation, identity resolution, sessions, cookies and the database for real.
 - **Configuration is a contract.** 58 environment rules are checked at startup, including combinations of settings. The app won't start with an unsafe configuration.
 - **Tests are checked to see that they fail.** Important guarantees were verified by putting the bug back and confirming the right test fails.
 - **Real concurrency is tested on a real database.** Race conditions are reproduced by making transactions overlap in Postgres, not by mocking.
@@ -344,6 +378,8 @@ The policy applies only when a password is **set**, never when it is checked. En
 | Access-token tail with the denylist off | Up to 10 minutes of access after revocation | Enable the denylist in production |
 | No double-submit CSRF token | CSRF if the frontend moves to a different site | Add it before any cross-site deployment |
 | No MFA | A single stolen password gives full access | Roadmap, after organizations and policy |
+| `AUTH_GOOGLE_NONCE_REQUIRED` is off in development | A Google ID token with no nonce is accepted, so a leaked token is replayable within its hour | Turn it on with the frontend that sends the nonce; production already refuses to start without it |
+
 
 ## 9. Before production
 
@@ -351,4 +387,4 @@ The policy applies only when a password is **set**, never when it is checked. En
 - Swap the two session lifetimes in `.env` so the absolute one is the longer (currently `SESSION_ABSOLUTE_TTL_SECONDS` is shorter than `SESSION_REFRESH_TTL_SECONDS`), and add the startup validation rule that enforces it.
 - Set how many proxies to trust to the real number in front of the service.
 - Decide whether the denylist is on.
-- Add a cleanup job for expired refresh tokens (its index already exists).
+
