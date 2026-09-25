@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { JwtModule } from '@nestjs/jwt';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PasswordChangeRequiredGuard } from './common/guards/password-change-required.guard';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 
 @Module({
   imports: [
@@ -127,7 +128,8 @@ import { PasswordChangeRequiredGuard } from './common/guards/password-change-req
     HealthModule,
     PrismaModule,
     AuthModule,
-    EmailModule
+    EmailModule,
+    MaintenanceModule
   ],
   providers: [
     {

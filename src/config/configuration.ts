@@ -101,4 +101,11 @@ export default () => ({
             nonceTtlSeconds: Number(process.env.AUTH_GOOGLE_NONCE_TTL_SECONDS) || 300,
         },
     },
+    maintenance: {
+        cleanupEnabled: process.env.MAINTENANCE_CLEANUP_ENABLED !== 'false',
+        cleanupCron: process.env.MAINTENANCE_CLEANUP_CRON || '17 3 * * *',
+        refreshTokenRetentionDays: Number(process.env.REFRESH_TOKEN_RETENTION_DAYS) || 30,
+        userTokenRetentionDays: Number(process.env.USER_TOKEN_RETENTION_DAYS) || 7,
+        authNonceRetentionDays: Number(process.env.AUTH_NONCE_RETENTION_DAYS) || 1,
+    },
 })

@@ -122,5 +122,13 @@ export const envValidationSchema = Joi.object({
         }),
     }),
     AUTH_GOOGLE_NONCE_TTL_SECONDS: Joi.number().integer().positive().min(60).max(900).default(300),
+    // Maintenance Configuration
+    MAINTENANCE_CLEANUP_ENABLED: Joi.boolean().default(true),
+    MAINTENANCE_CLEANUP_CRON: Joi.string().default('17 3 * * *'),
+    // Refresh tokens must outlive their own expiry: reuse detection needs the row to
+    // recognise a replayed token as theft rather than as an unknown token.
+    REFRESH_TOKEN_RETENTION_DAYS: Joi.number().integer().min(7).max(365).default(30),
+    USER_TOKEN_RETENTION_DAYS: Joi.number().integer().min(1).max(365).default(7),
+    AUTH_NONCE_RETENTION_DAYS: Joi.number().integer().min(1).max(30).default(1),
 
 })
