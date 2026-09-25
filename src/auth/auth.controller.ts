@@ -7,7 +7,7 @@ import { LoginDto } from './dto/login.dto';
 import { SkipThrottle } from '@nestjs/throttler';
 import { buildAuthContext } from './utils/auth.util';
 import { Public } from 'src/common/decorators/public.decorator';
-import { LoginResponse, RefreshResponse } from './interfaces/login.interface';
+import { LoginResponse, LoginResult, RefreshResponse } from './interfaces/login.interface';
 import { LogoutResponse } from './interfaces/session.interface';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { AllowPasswordChangePending } from 'src/common/decorators/allow-password-change-pending.decorator';
@@ -19,6 +19,7 @@ import { GENERIC_REFRESH_FAILURE } from './constants/auth.constants';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangePasswordResponse } from './password/password.interface';
 import { PasswordService } from './password/password.service';
+import { GoogleLoginDto } from './dto/google-login.dto';
 
 export interface VerifyEmailParams {
     tokenId?: string;
@@ -63,23 +64,7 @@ export class AuthController {
         @Res({ passthrough: true }) res: Response
     ): Promise<LoginResponse> {
         const result = await this.authService.login(body, buildAuthContext(req));
-        const { session, user } = result;
-        
-        // Using res.cookie(name, value, options);
-        res.cookie(
-            this.config.getOrThrow<string>('auth.cookie.name'), // name
-            session.refreshToken, // value
-            buildCookieOptionsFromConfig(this.config, session.refreshTokenExpiresAt) // options
-        );
-
-        // Built field by field on purpose. Returning `session`, or spreading it, would
-        // put the raw refresh token in the JSON body and defeat httpOnly entirely.
-        return {
-            accessToken: session.accessToken,
-            expiresIn: session.expiresIn,
-            tokenType: 'Bearer',
-            user: user
-        }
+        return this.respondWithSession(res, result);
     }
 
     @Public()
@@ -206,4 +191,44 @@ export class AuthController {
         // Field by field: the raw refresh token belongs in the cookie only.
         return { success: true, revokedSessions: result.revokedSessions };
     }
+
+    @Public()
+    @SkipThrottle({ auth: false })
+    @Post('google')
+    async googleLogin (
+        @Body() body: GoogleLoginDto,
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response
+    ): Promise<LoginResponse> {
+        const result = await this.authService.loginWithGoogle(body, buildAuthContext(req));
+        return this.respondWithSession(res, result);
+    }
+
+    @Public()
+    @SkipThrottle({ auth: false })
+    @Post('google/nonce')
+    async googleNonce (): Promise<{ nonce: string, expiresAt: Date }> {
+        return this.authService.issueGoogleNonce();
+    }
+
+    /** Sets the refresh cookie and builds the body. Never returns the refresh token. */
+    private respondWithSession(res: Response, result: LoginResult): LoginResponse {
+        const { session, user } = result;
+        
+        // Using res.cookie(name, value, options);
+        res.cookie(
+            this.config.getOrThrow<string>('auth.cookie.name'), // name
+            session.refreshToken, // value
+            buildCookieOptionsFromConfig(this.config, session.refreshTokenExpiresAt) // options
+        );
+
+        // Built field by field on purpose. Returning `session`, or spreading it, would
+        // put the raw refresh token in the JSON body and defeat httpOnly entirely.
+        return {
+            accessToken: session.accessToken,
+            expiresIn: session.expiresIn,
+            tokenType: 'Bearer',
+            user: user
+        }
+    }    
 }

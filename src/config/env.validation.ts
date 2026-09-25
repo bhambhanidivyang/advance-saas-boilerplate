@@ -95,4 +95,32 @@ export const envValidationSchema = Joi.object({
     // Context Lengths Configuration
     MAX_DEVICE_ID_LENGTH: Joi.number().integer().positive().required().default(255),
     MAX_USER_AGENT_LENGTH: Joi.number().integer().positive().required().default(1000),
+
+    // Google Sign-In Configuration
+    AUTH_GOOGLE_ENABLED: Joi.boolean().default(false),
+    GOOGLE_CLIENT_IDS: Joi.string().when('AUTH_GOOGLE_ENABLED', {
+        is: true,
+        then: Joi.string()
+            .required()
+            .pattern(/^[^,\s]+\.apps\.googleusercontent\.com(\s*,\s*[^,\s]+\.apps\.googleusercontent\.com)*$/)
+            .messages({
+                'string.pattern.base':
+                    'GOOGLE_CLIENT_IDS must be a comma-separated list of ...apps.googleusercontent.com IDs',
+            }),
+        otherwise: Joi.string().optional().allow(''),
+    }),
+    AUTH_GOOGLE_NONCE_REQUIRED: Joi.boolean()
+    .default(false)
+    .when('NODE_ENV', {
+        is: 'production',
+        then: Joi.when('AUTH_GOOGLE_ENABLED', {
+            is: true,
+            then: Joi.valid(true).messages({
+                'any.only':
+                    'AUTH_GOOGLE_NONCE_REQUIRED must be true in production when Google sign-in is enabled',
+            }),
+        }),
+    }),
+    AUTH_GOOGLE_NONCE_TTL_SECONDS: Joi.number().integer().positive().min(60).max(900).default(300),
+
 })

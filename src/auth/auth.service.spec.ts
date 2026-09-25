@@ -8,6 +8,8 @@ import { Prisma } from 'src/generated/prisma/client';
 import { GENERIC_VERIFICATION_RESPONSE } from './constants/auth.constants';
 import { SessionService } from './session/session.service';
 import { PasswordAuthenticatorService } from './password/password-authenticator.service';
+import { GoogleAuthenticatorService } from './google/google-authenticator.service';
+import { GoogleNonceService } from './google/google-nonce.service';
 
 const COOLDOWN_SECONDS = 60;
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
@@ -67,6 +69,8 @@ describe('AuthService', () => {
         { provide: SessionService, useValue: { createSession: jest.fn() } },
         // Login is covered in auth.service.login.spec.ts; these specs never reach it.
         { provide: PasswordAuthenticatorService, useValue: {} },
+        { provide: GoogleAuthenticatorService, useValue: {} },
+        { provide: GoogleNonceService, useValue: { issue: jest.fn() } },
         {
           provide: ConfigService,
           useValue: {

@@ -19,6 +19,8 @@ import { installTransactionOverlapBarrier } from 'src/common/testing/transaction
 import { EmailService } from 'src/email/email.service';
 import { SessionService } from './session/session.service';
 import { PasswordAuthenticatorService } from './password/password-authenticator.service';
+import { GoogleAuthenticatorService } from './google/google-authenticator.service';
+import { GoogleNonceService } from './google/google-nonce.service';
 import {
   AuthEventType,
   Prisma,
@@ -116,6 +118,8 @@ describe('AuthService concurrency (PostgreSQL)', () => {
         { provide: SessionService, useValue: { createSession: jest.fn() } },
         // Login is covered in auth.service.login.spec.ts; these specs never reach it.
         { provide: PasswordAuthenticatorService, useValue: {} },
+        { provide: GoogleAuthenticatorService, useValue: {} },
+        { provide: GoogleNonceService, useValue: { issue: jest.fn() } },
         {
           provide: ConfigService,
           useValue: {

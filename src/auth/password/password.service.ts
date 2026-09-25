@@ -7,7 +7,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthEventType, SessionRevocationReason, UserStatus } from 'src/generated/prisma/client';
 import { logAuditEvent } from 'src/common/audit/log-auth-event';
-import { runUnitOfWork } from 'src/common/prisma/unit-of-work';
+import { runUnitOfWork, UnitOfWork } from 'src/common/prisma/unit-of-work';
 import { SessionService } from '../session/session.service';
 import { hashPassword, verifyPassword } from './password-hash.util';
 import { ChangePasswordArgs, ChangePasswordResult } from './password.interface';
@@ -145,4 +145,25 @@ export class PasswordService {
             return { ...reissued, revokedSessions: revokedSessionIds.length };
         });
     }
+
+    /**
+     * Strips the password credential. Used when linking an external identity to an
+     * account whose email was never verified: that password may belong to whoever
+     * squatted the address, so it cannot survive the link.
+     *
+     * Takes the caller's unit of work — removing a password only makes sense
+     * together with revoking the sessions it created.
+    */
+    async removePassword(uow: UnitOfWork, userId: string, now: Date): Promise<void> {
+        await uow.tx.user.update({
+            where: { id: userId },
+            data: {
+                passwordHash: null,
+                passwordChangedAt: now,
+                mustChangePassword: false,
+                ...CLEARED_LOCKOUT_STATE,
+            },
+        });
+    }
+    
 }

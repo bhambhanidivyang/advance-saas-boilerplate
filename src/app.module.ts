@@ -99,6 +99,8 @@ import { PasswordChangeRequiredGuard } from './common/guards/password-change-req
               'req.body.rawToken',
               'req.body.clientSecret',
               'req.body.apiKey',
+              'req.body.idToken',
+              'req.body.nonce',
             ],
             censor: '[REDACTED]'
           }

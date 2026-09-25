@@ -7,11 +7,26 @@ import { SessionService } from './session/session.service';
 import { SessionDenylistService } from './session/session-denylist.service';
 import { PasswordService } from './password/password.service';
 import { PasswordAuthenticatorService } from './password/password-authenticator.service';
+import { GoogleTokenVerifier } from './google/google-token-verifier';
+import { IdentityService } from './identity/identity.service';
+import { GoogleAuthenticatorService } from './google/google-authenticator.service';
+import { GoogleNonceService } from './google/google-nonce.service';
 
 @Module({
   imports: [EmailModule],
   controllers: [AuthController],
-  providers: [AuthService, TokenService, SessionService, SessionDenylistService, PasswordService, PasswordAuthenticatorService],
+  providers: [
+    AuthService,
+    TokenService,
+    SessionService,
+    SessionDenylistService,
+    PasswordService,
+    PasswordAuthenticatorService,
+    GoogleTokenVerifier,
+    IdentityService,
+    GoogleAuthenticatorService,
+    GoogleNonceService
+  ],
   exports: [TokenService, SessionService, SessionDenylistService]
 })
 export class AuthModule {}

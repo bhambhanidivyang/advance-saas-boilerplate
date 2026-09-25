@@ -89,6 +89,16 @@ export default () => ({
                         ? Number(process.env.TRUST_PROXY)
                         : process.env.TRUST_PROXY.trim())
             : false,
-        
+        capabilities: {
+            google: process.env.AUTH_GOOGLE_ENABLED === 'true'
+        },
+        google: {
+            clientIds: (process.env.GOOGLE_CLIENT_IDS ?? '')
+                .split(',')
+                .map((id) => id.trim())
+                .filter(Boolean),
+            nonceRequired: process.env.AUTH_GOOGLE_NONCE_REQUIRED === 'true',
+            nonceTtlSeconds: Number(process.env.AUTH_GOOGLE_NONCE_TTL_SECONDS) || 300,
+        },
     },
 })

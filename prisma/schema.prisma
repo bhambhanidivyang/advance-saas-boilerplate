@@ -223,7 +223,7 @@ model UserToken {
   @@index([userId, type])
   @@index([expiresAt])
 }
-
+/// reserved for the OIDC redirect flow in the future, it is not used for the current Google OAuth flow
 model OAuthState {
   id String @id @default(uuid()) @db.Uuid
 
@@ -233,6 +233,19 @@ model OAuthState {
   provider AuthProvider
 
   redirectTo String @db.VarChar(2048)
+
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+}
+
+model AuthNonce {
+  id String @id @default(uuid()) @db.Uuid
+
+  provider  AuthProvider
+  nonceHash String       @unique @db.Text
 
   expiresAt DateTime  @db.Timestamptz(6)
   usedAt    DateTime? @db.Timestamptz(6)
@@ -292,13 +305,13 @@ enum AuthEventType {
   PASSWORD_RESET
   EMAIL_VERIFIED
   PHONE_VERIFIED
-  GOOGLE_LOGIN
   OTP_SENT
   OTP_VERIFIED
   OTP_FAILED
   TOKEN_REFRESH
   TOKEN_REUSE_DETECTED
   SESSION_REVOKED
+  IDENTITY_LINKED
 }
 
 model AuthEvent {

@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from 'nestjs-pino';
 import type { Request, Response } from 'express';
@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import { CreateNewUser } from './dto/create-new-user.dto';
 import { ResendVerification } from './dto/resend-verification.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { LoginResult } from './interfaces/login.interface';
 import { SessionService } from './session/session.service';
 import { PasswordService } from './password/password.service';
@@ -30,6 +31,7 @@ describe('AuthController', () => {
     resendVerifyEmail: jest.Mock;
     verifyEmail: jest.Mock;
     login: jest.Mock;
+    loginWithGoogle: jest.Mock;
   };
   let sessionService: {
     rotateRefreshToken: jest.Mock;
@@ -44,6 +46,7 @@ describe('AuthController', () => {
       resendVerifyEmail: jest.fn(),
       verifyEmail: jest.fn(),
       login: jest.fn(),
+      loginWithGoogle: jest.fn(),
     };
     sessionService = {
       rotateRefreshToken: jest.fn(),
@@ -246,6 +249,86 @@ describe('AuthController', () => {
         'raw-refresh-token',
         expect.objectContaining({ httpOnly: true, path: '/auth' }),
       );
+    });
+  });
+
+  describe('googleLogin', () => {
+    const body: GoogleLoginDto = { idToken: 'google-id-token' };
+    const headers: Record<string, string> = { 'user-agent': 'jest', 'device-id': 'device-1' };
+    const req = {
+      ip: '203.0.113.10',
+      get: (name: string) => headers[name.toLowerCase()],
+    } as unknown as Request;
+
+    const googleResult: LoginResult = {
+      session: {
+        sessionId: 'session-2',
+        tokenFamilyId: 'family-2',
+        accessToken: 'google-access-token',
+        expiresIn: 600,
+        refreshToken: 'google-refresh-token',
+        refreshTokenExpiresAt: new Date(Date.now() + 60_000),
+      },
+      user: { id: 'user-2', emailVerified: true, mustChangePassword: false },
+    };
+
+    let res: { cookie: jest.Mock };
+
+    beforeEach(() => {
+      res = { cookie: jest.fn() };
+      authService.loginWithGoogle.mockResolvedValue(googleResult);
+    });
+
+    it('passes the token and the request context to the service', async () => {
+      await controller.googleLogin(body, req, res as unknown as Response);
+
+      expect(authService.loginWithGoogle).toHaveBeenCalledTimes(1);
+      expect(authService.loginWithGoogle).toHaveBeenCalledWith(body, {
+        ipAddress: '203.0.113.10',
+        userAgent: 'jest',
+        deviceId: 'device-1',
+      });
+    });
+
+    // The same guarantee as password login: httpOnly is defeated the moment the raw
+    // token appears in a body, and both routes now share one response builder.
+    it('never returns the refresh token in the response body', async () => {
+      const response = await controller.googleLogin(body, req, res as unknown as Response);
+
+      expect(response).not.toHaveProperty('refreshToken');
+      expect(JSON.stringify(response)).not.toContain(googleResult.session.refreshToken);
+      expect(response).toEqual({
+        accessToken: 'google-access-token',
+        expiresIn: 600,
+        tokenType: 'Bearer',
+        user: googleResult.user,
+      });
+    });
+
+    it('sets the refresh token as the configured httpOnly cookie', async () => {
+      await controller.googleLogin(body, req, res as unknown as Response);
+
+      expect(res.cookie).toHaveBeenCalledTimes(1);
+      expect(res.cookie).toHaveBeenCalledWith(
+        'mn_rt',
+        'google-refresh-token',
+        expect.objectContaining({ httpOnly: true, path: '/auth' }),
+      );
+    });
+
+    // A disabled capability answers 404, and a bad token a generic 401. Neither may
+    // be converted into a session or a cookie on the way out.
+    it.each([
+      ['a rejected token', new UnauthorizedException('Google sign-in failed.')],
+      ['a disabled capability', new NotFoundException()],
+    ])('propagates %s without setting a cookie', async (_label, failure) => {
+      authService.loginWithGoogle.mockRejectedValue(failure);
+
+      await expect(
+        controller.googleLogin(body, req, res as unknown as Response),
+      ).rejects.toBe(failure);
+
+      expect(res.cookie).not.toHaveBeenCalled();
     });
   });
 

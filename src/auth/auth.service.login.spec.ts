@@ -12,6 +12,8 @@ import { AuthenticationResult } from './interfaces/authentication-result.interfa
 import { IssuedSession } from './interfaces/session.interface';
 import { SessionService } from './session/session.service';
 import { PasswordAuthenticatorService } from './password/password-authenticator.service';
+import { GoogleAuthenticatorService } from './google/google-authenticator.service';
+import { GoogleNonceService } from './google/google-nonce.service';
 
 /**
  * Login as orchestration only: prove identity, then start a session. The proof
@@ -39,16 +41,20 @@ describe('AuthService.login', () => {
 
     let service: AuthService;
     let passwordAuthenticator: { authenticate: jest.Mock };
+    let googleAuthenticator: { authenticate: jest.Mock };
     let sessionService: { createSession: jest.Mock };
 
     beforeEach(async () => {
         passwordAuthenticator = { authenticate: jest.fn().mockResolvedValue(authentication) };
+        googleAuthenticator = { authenticate: jest.fn() };
         sessionService = { createSession: jest.fn().mockResolvedValue(issuedSession) };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 AuthService,
                 { provide: PasswordAuthenticatorService, useValue: passwordAuthenticator },
+                { provide: GoogleAuthenticatorService, useValue: googleAuthenticator },
+                { provide: GoogleNonceService, useValue: { issue: jest.fn() } },
                 { provide: SessionService, useValue: sessionService },
                 { provide: PrismaService, useValue: {} },
                 { provide: EmailService, useValue: {} },
@@ -114,5 +120,54 @@ describe('AuthService.login', () => {
         expect(sessionService.createSession).toHaveBeenCalledWith(
             expect.objectContaining({ authMethod: AuthMethod.GOOGLE, mustChangePassword: true }),
         );
+    });
+
+    // Google sign-in is the second caller of completeSignIn. These tests exist to
+    // prove it goes through the same path rather than growing a parallel one.
+    describe('loginWithGoogle', () => {
+        const googleAuthentication: AuthenticationResult = {
+            userId: 'user-9',
+            authMethod: AuthMethod.GOOGLE,
+            emailVerified: true,
+            mustChangePassword: false,
+        };
+
+        beforeEach(() => {
+            googleAuthenticator.authenticate.mockResolvedValue(googleAuthentication);
+        });
+
+        it('hands the raw id token and context to the Google authenticator', async () => {
+            await service.loginWithGoogle({ idToken: 'google-id-token' }, context);
+
+            expect(googleAuthenticator.authenticate).toHaveBeenCalledWith('google-id-token', context);
+            expect(passwordAuthenticator.authenticate).not.toHaveBeenCalled();
+        });
+
+        it('creates the session through the same step password login uses', async () => {
+            const result = await service.loginWithGoogle({ idToken: 'google-id-token' }, context);
+
+            expect(sessionService.createSession).toHaveBeenCalledWith({
+                userId: 'user-9',
+                authMethod: AuthMethod.GOOGLE,
+                emailVerified: true,
+                mustChangePassword: false,
+                context,
+            });
+            expect(result).toEqual({
+                session: issuedSession,
+                user: { id: 'user-9', emailVerified: true, mustChangePassword: false },
+            });
+        });
+
+        it('never creates a session when Google authentication fails', async () => {
+            const failure = new UnauthorizedException('Google sign-in failed.');
+            googleAuthenticator.authenticate.mockRejectedValue(failure);
+
+            await expect(
+                service.loginWithGoogle({ idToken: 'google-id-token' }, context),
+            ).rejects.toBe(failure);
+
+            expect(sessionService.createSession).not.toHaveBeenCalled();
+        });
     });
 });

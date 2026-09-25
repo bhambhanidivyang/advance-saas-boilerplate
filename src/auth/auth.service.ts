@@ -21,6 +21,9 @@ import { SessionService } from './session/session.service';
 import { LoginResult } from './interfaces/login.interface';
 import { AuthenticationResult } from './interfaces/authentication-result.interface';
 import { PasswordAuthenticatorService } from './password/password-authenticator.service';
+import { GoogleLoginDto } from './dto/google-login.dto';
+import { GoogleAuthenticatorService } from './google/google-authenticator.service';
+import { GoogleNonceService } from './google/google-nonce.service';
 
 @Injectable()
 export class AuthService {
@@ -31,7 +34,9 @@ export class AuthService {
         private readonly config: ConfigService,
         private readonly logger: Logger,
         private readonly sessionService: SessionService,
-        private readonly passwordAuth: PasswordAuthenticatorService
+        private readonly passwordAuth: PasswordAuthenticatorService,
+        private readonly googleAuth: GoogleAuthenticatorService,
+        private readonly nonceService: GoogleNonceService
     ) {
          this.verificationTokenTtl = this.config.get<number>('email.verificationTokenTtl')!;
     }
@@ -218,6 +223,18 @@ export class AuthService {
             };
         });
     }
+
+    // login with google
+    async loginWithGoogle(body: GoogleLoginDto, context: AuthContext): Promise<LoginResult> {
+        const authentication = await this.googleAuth.authenticate(body.idToken, context);
+        return this.completeSignIn(authentication, context);
+    }
+
+    async issueGoogleNonce(): Promise<{nonce: string, expiresAt: Date}> {
+        const now = new Date();
+        return await this.nonceService.issue(now);
+    }
+
 
     /** HELPER FUNCTIONS **/
     // email lookup for register
